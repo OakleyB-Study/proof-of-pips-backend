@@ -235,8 +235,13 @@ router.post('/add-jimmy', async (req, res) => {
 
     let totalBalance = 0;
     let totalProfit = 0;
+    let monthlyProfit = 0;
     let totalTrades = 0;
     let winningTrades = 0;
+
+    // Calculate month start (Nov 1, 2025)
+    const now = new Date();
+    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
 
     console.log('Fetching trades from all accounts...');
 
@@ -260,13 +265,19 @@ router.post('/add-jimmy', async (req, res) => {
           totalProfit += trade.profitAndLoss;
           totalTrades++;
           if (trade.profitAndLoss > 0) winningTrades++;
+
+          // Add to monthly profit if trade is from this month
+          const tradeDate = new Date(trade.creationTimestamp);
+          if (tradeDate >= monthStart) {
+            monthlyProfit += trade.profitAndLoss;
+          }
         }
       }
     }
 
     const winRate = totalTrades > 0 ? ((winningTrades / totalTrades) * 100) : 0;
 
-    console.log('Stats calculated:', { totalBalance, totalProfit, winRate, totalTrades });
+    console.log('Stats calculated:', { totalBalance, totalProfit, monthlyProfit, winRate, totalTrades });
 
     // Get or create trader
     let { data: trader, error: traderError } = await db
@@ -312,7 +323,7 @@ router.post('/add-jimmy', async (req, res) => {
         trader_id: traderId,
         total_profit: totalProfit,
         verified_payouts: 0,
-        monthly_profit: 0,
+        monthly_profit: monthlyProfit,
         win_rate: winRate,
         updated_at: new Date().toISOString()
       }]);
@@ -327,6 +338,7 @@ router.post('/add-jimmy', async (req, res) => {
         numberOfAccounts: accounts.length,
         totalBalance: totalBalance.toFixed(2),
         totalProfit: totalProfit.toFixed(2),
+        monthlyProfit: monthlyProfit.toFixed(2),
         winRate: `${winRate.toFixed(2)}%`,
         totalTrades: totalTrades
       }
