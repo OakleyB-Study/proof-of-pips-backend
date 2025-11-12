@@ -12,6 +12,7 @@ require('dotenv').config();
 
 const tradersRoutes = require('./routes/traders');
 const syncRoutes = require('./routes/sync');
+const { startCronJobs } = require('./cron-sync'); // NEW: Import cron jobs
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -90,4 +91,7 @@ app.listen(PORT, () => {
   console.log(`✅ Proof of Pips API server running on port ${PORT}`);
   console.log(`🔗 Health check: http://localhost:${PORT}/health`);
   console.log(`📊 API endpoints available at: http://localhost:${PORT}/api`);
+  
+  // NEW: Start cron jobs after server is running
+  startCronJobs();
 });
