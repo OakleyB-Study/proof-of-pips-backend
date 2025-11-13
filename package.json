@@ -17,6 +17,7 @@
     "@supabase/supabase-js": "^2.38.4",
     "node-cron": "^3.0.3",
     "axios": "^1.6.0"
+    "express-rate-limit": "^7.1.5"
   },
   "devDependencies": {
     "nodemon": "^3.0.1"
