@@ -13,6 +13,7 @@ require('dotenv').config();
 const tradersRoutes = require('./routes/traders');
 const syncRoutes = require('./routes/sync');
 const { startCronJobs } = require('./cron-sync'); // NEW: Import cron jobs
+const { generalLimiter, syncLimiter } = require('./middleware/rateLimiter'); // Rate limiting
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -30,6 +31,16 @@ app.use(cors({
   credentials: true
 }));
 app.use(express.json());
+
+// ============================================
+// RATE LIMITING
+// ============================================
+// WHAT THIS DOES: Prevents API abuse by limiting requests per IP
+// - General: 100 requests per 15 minutes
+// - Sync endpoints: 10 requests per hour (more restrictive)
+// ============================================
+
+app.use(generalLimiter);
 
 // ============================================
 // LOGGING MIDDLEWARE (for debugging)
@@ -50,7 +61,7 @@ app.use((req, res, next) => {
 // ============================================
 
 app.use('/api/traders', tradersRoutes);
-app.use('/api/sync', syncRoutes);
+app.use('/api/sync', syncLimiter, syncRoutes); // Add rate limiter to sync routes
 
 // ============================================
 // HEALTH CHECK ENDPOINT
