@@ -5,6 +5,7 @@
 const express = require('express');
 const router = express.Router();
 const db = require('../config/database');
+const { decrypt } = require('../utils/encryption');
 
 // ============================================
 // ADD/SYNC JIMMYFUTURES
@@ -174,9 +175,11 @@ router.post('/add-jimmy', async (req, res) => {
 async function syncSingleTrader(trader) {
   try {
     console.log(`Syncing trader: ${trader.twitter_username}`);
-    console.log('Trader object:', JSON.stringify(trader, null, 2));
     
     const apiUrl = process.env.PROJECTX_API_URL;
+    
+    // Decrypt API key before using
+    const decryptedApiKey = decrypt(trader.projectx_api_key);
 
     // Authenticate
     const authResponse = await fetch(`${apiUrl}/Auth/loginKey`, {
@@ -184,7 +187,7 @@ async function syncSingleTrader(trader) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ 
         userName: trader.projectx_username.trim(), 
-        apiKey: trader.projectx_api_key.trim() 
+        apiKey: decryptedApiKey 
       })
     });
 
