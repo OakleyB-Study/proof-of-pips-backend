@@ -174,6 +174,7 @@ router.post('/add-jimmy', async (req, res) => {
 async function syncSingleTrader(trader) {
   try {
     console.log(`Syncing trader: ${trader.twitter_username}`);
+    console.log('Trader object:', JSON.stringify(trader, null, 2));
     
     const apiUrl = process.env.PROJECTX_API_URL;
 
