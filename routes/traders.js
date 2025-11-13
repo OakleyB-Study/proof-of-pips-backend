@@ -11,6 +11,7 @@
 const express = require('express');
 const router = express.Router();
 const db = require('../config/database');
+const { encrypt } = require('../utils/encryption');
 
 // ============================================
 // GET ALL TRADERS (for leaderboard)
@@ -132,9 +133,113 @@ router.get('/:username', async (req, res) => {
 // ============================================
 // ADD NEW TRADER
 // ============================================
-// WHAT THIS DOES:
-// When someone clicks "Add Profile" on your site, this creates a new trader
-// Stores their Twitter username and ProjectX API key (encrypted)
+// POST /api/traders/add
+// Validates API key, encrypts it, saves trader, runs initial sync
+// ============================================
+
+router.post('/add', async (req, res) => {
+  try {
+    const { twitterUsername, propFirm, projectxUsername, projectxApiKey } = req.body;
+
+    // Validate required fields
+    if (!twitterUsername || !projectxUsername || !projectxApiKey) {
+      return res.status(400).json({ 
+        error: 'All fields are required' 
+      });
+    }
+
+    // Only Lucid is supported for now
+    if (propFirm !== 'lucid') {
+      return res.status(400).json({ 
+        error: 'Only Lucid Trading is supported at this time' 
+      });
+    }
+
+    // Check if Twitter username already exists
+    const { data: existing } = await db
+      .from('traders')
+      .select('id')
+      .eq('twitter_username', twitterUsername)
+      .single();
+
+    if (existing) {
+      return res.status(400).json({ 
+        error: 'This Twitter username is already registered' 
+      });
+    }
+
+    // Validate API key by testing authentication with ProjectX
+    const apiUrl = process.env.PROJECTX_API_URL;
+    console.log(`Validating API key for ${twitterUsername}...`);
+
+    try {
+      const authResponse = await fetch(`${apiUrl}/Auth/loginKey`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          userName: projectxUsername.trim(), 
+          apiKey: projectxApiKey.trim() 
+        })
+      });
+
+      const authData = await authResponse.json();
+      
+      if (!authData.success) {
+        return res.status(401).json({ 
+          error: 'Invalid ProjectX credentials. Please check your username and API key.' 
+        });
+      }
+
+      console.log('✅ API key validated successfully');
+    } catch (error) {
+      console.error('API validation error:', error);
+      return res.status(500).json({ 
+        error: 'Failed to validate API key. Please try again.' 
+      });
+    }
+
+    // Encrypt the API key before storing
+    const encryptedApiKey = encrypt(projectxApiKey.trim());
+    
+    // Insert new trader
+    const { data: newTrader, error: insertError } = await db
+      .from('traders')
+      .insert([
+        {
+          twitter_username: twitterUsername,
+          projectx_username: projectxUsername.trim(),
+          projectx_api_key: encryptedApiKey,
+          avatar: '🏆', // Default avatar
+          account_created: new Date().toISOString()
+        }
+      ])
+      .select()
+      .single();
+
+    if (insertError) throw insertError;
+
+    console.log(`✅ Trader ${twitterUsername} added successfully`);
+
+    // Trigger initial sync (async - don't wait for it)
+    fetch(`${process.env.BACKEND_URL || 'http://localhost:3001'}/api/sync/all`, {
+      method: 'POST'
+    }).catch(err => console.error('Initial sync failed:', err));
+
+    res.status(201).json({ 
+      message: 'Profile added successfully! Your stats are being synced.',
+      trader: {
+        twitter: newTrader.twitter_username,
+        id: newTrader.id
+      }
+    });
+  } catch (error) {
+    console.error('Error adding trader:', error);
+    res.status(500).json({ error: 'Failed to add profile. Please try again.' });
+  }
+});
+
+// ============================================
+// OLD ENDPOINT (DEPRECATED - Keep for backwards compatibility)
 // ============================================
 
 router.post('/', async (req, res) => {
@@ -148,7 +253,8 @@ router.post('/', async (req, res) => {
       });
     }
 
-    // TODO: Encrypt the API key before storing (we'll add this later)
+    // Encrypt the API key before storing
+    const encryptedApiKey = encrypt(projectxApiKey.trim());
     
     // Insert new trader
     const { data, error } = await db
@@ -156,8 +262,8 @@ router.post('/', async (req, res) => {
       .insert([
         {
           twitter_username: twitterUsername,
-          projectx_api_key: projectxApiKey, // Should be encrypted!
-          projectx_username: projectxUsername,
+          projectx_api_key: encryptedApiKey,
+          projectx_username: projectxUsername.trim(),
           avatar: '👤', // Default avatar
           account_created: new Date().toISOString()
         }
