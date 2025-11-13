@@ -183,8 +183,8 @@ async function syncSingleTrader(trader) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ 
-        userName: trader.projectx_username, 
-        apiKey: trader.projectx_api_key 
+        userName: trader.projectx_username.trim(), 
+        apiKey: trader.projectx_api_key.trim() 
       })
     });
 
