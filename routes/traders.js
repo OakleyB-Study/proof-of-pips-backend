@@ -139,7 +139,44 @@ router.get('/:username', async (req, res) => {
 
 router.post('/add', async (req, res) => {
   try {
-    const { twitterUsername, propFirm, projectxUsername, projectxApiKey } = req.body;
+    const { twitterUsername, authToken, propFirm, projectxUsername, projectxApiKey } = req.body;
+
+    // Verify Twitter auth token
+    if (!authToken) {
+      return res.status(401).json({ 
+        error: 'Twitter authentication required. Please authenticate with Twitter first.' 
+      });
+    }
+
+    try {
+      const verifyResponse = await fetch(`${process.env.BACKEND_URL}/api/auth/verify`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ authToken })
+      });
+
+      const verifyData = await verifyResponse.json();
+
+      if (!verifyResponse.ok || !verifyData.verified) {
+        return res.status(401).json({ 
+          error: 'Invalid or expired Twitter authentication. Please try again.' 
+        });
+      }
+
+      // Verify the username matches
+      if (verifyData.twitterUsername !== twitterUsername.replace('@', '')) {
+        return res.status(401).json({ 
+          error: 'Twitter username mismatch. Please authenticate again.' 
+        });
+      }
+
+      console.log(`✅ Twitter verified: @${twitterUsername}`);
+    } catch (error) {
+      console.error('Auth verification error:', error);
+      return res.status(401).json({ 
+        error: 'Failed to verify Twitter authentication' 
+      });
+    }
 
     // Validate required fields
     if (!twitterUsername || !projectxUsername || !projectxApiKey) {
