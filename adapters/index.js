@@ -9,19 +9,29 @@ const RithmicAdapter = require('./rithmic');
 const FIRM_TO_PLATFORM = {
   // ProjectX-based firms
   'lucid': 'projectx',
-  'lucid-trading': 'projectx',
+  'topstepx': 'projectx',
+  'tictictrader': 'projectx',
+  'goat': 'projectx',
   
   // CQG-based firms
   'ninjatrader': 'cqg',
-  'ninjatrader-prop': 'cqg',
   'tradovate': 'cqg',
-  'tradovate-prop': 'cqg',
   'tradingview': 'cqg',
   
   // Rithmic-based firms
   'motivewave': 'rithmic',
   'quantower': 'rithmic',
   'sierra-chart': 'rithmic',
+};
+
+/**
+ * Mapping of ProjectX firms to their API subdomains
+ */
+const PROJECTX_SUBDOMAINS = {
+  'lucid': 'https://api.lucidtrading.projectx.com/api',
+  'topstepx': 'https://api.topstepx.projectx.com/api',
+  'tictictrader': 'https://t3.projectx.com/api',
+  'goat': 'https://api.goat.projectx.com/api',
 };
 
 /**
@@ -111,13 +121,31 @@ function isPlatformImplemented(platform) {
   return platform.toLowerCase() === 'projectx';
 }
 
+/**
+ * Get the ProjectX API subdomain for a given firm
+ * @param {string} firm - Prop firm name (e.g., 'lucid', 'topstepx')
+ * @returns {string} - ProjectX API URL for that firm
+ */
+function getProjectXSubdomain(firm) {
+  const normalizedFirm = firm.toLowerCase().trim();
+  const subdomain = PROJECTX_SUBDOMAINS[normalizedFirm];
+  
+  if (!subdomain) {
+    throw new Error(`Unknown ProjectX firm: ${firm}. Supported ProjectX firms: ${Object.keys(PROJECTX_SUBDOMAINS).join(', ')}`);
+  }
+  
+  return subdomain;
+}
+
 module.exports = {
   getAdapterForFirm,
   getAdapterForPlatform,
   getPlatformForFirm,
+  getProjectXSubdomain,
   getSupportedFirms,
   getSupportedPlatforms,
   isFirmSupported,
   isPlatformImplemented,
   FIRM_TO_PLATFORM,
+  PROJECTX_SUBDOMAINS,
 };
