@@ -1,0 +1,62 @@
+/**
+ * Base Adapter Interface
+ * All platform adapters (ProjectX, CQG, Rithmic) must implement these methods
+ */
+class BaseAdapter {
+  constructor() {
+    if (this.constructor === BaseAdapter) {
+      throw new Error("BaseAdapter is an abstract class and cannot be instantiated directly");
+    }
+  }
+
+  /**
+   * Authenticate with the platform
+   * @param {string} username - Platform username
+   * @param {string} apiKey - Platform API key (decrypted)
+   * @returns {Promise<string>} - Authentication token
+   */
+  async authenticate(username, apiKey) {
+    throw new Error("authenticate() must be implemented by subclass");
+  }
+
+  /**
+   * Get all accounts for a user
+   * @param {string} token - Authentication token
+   * @returns {Promise<Array>} - Array of account objects
+   */
+  async getAccounts(token) {
+    throw new Error("getAccounts() must be implemented by subclass");
+  }
+
+  /**
+   * Get trades for a specific account
+   * @param {string} token - Authentication token
+   * @param {string} accountId - Account ID
+   * @returns {Promise<Array>} - Array of trade objects
+   */
+  async getTrades(token, accountId) {
+    throw new Error("getTrades() must be implemented by subclass");
+  }
+
+  /**
+   * Calculate statistics from accounts and trades
+   * @param {Array} accounts - Array of account objects
+   * @param {Array} trades - Array of trade objects
+   * @returns {Object} - Statistics object with totalProfit, winRate, etc.
+   */
+  calculateStats(accounts, trades) {
+    throw new Error("calculateStats() must be implemented by subclass");
+  }
+
+  /**
+   * Full sync process - authenticate, fetch data, calculate stats
+   * @param {string} username - Platform username
+   * @param {string} apiKey - Platform API key (decrypted)
+   * @returns {Promise<Object>} - Statistics object
+   */
+  async sync(username, apiKey) {
+    throw new Error("sync() must be implemented by subclass");
+  }
+}
+
+module.exports = BaseAdapter;
