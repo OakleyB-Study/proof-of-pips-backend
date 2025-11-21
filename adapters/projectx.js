@@ -19,6 +19,8 @@ class ProjectXAdapter extends BaseAdapter {
    */
   async authenticate(username, apiKey) {
     try {
+      console.log(`[ProjectX] Authenticating ${username} with baseURL: ${this.baseURL}`);
+      
       const response = await axios.post(
         `${this.baseURL}/Auth/loginKey`,
         {
@@ -31,9 +33,10 @@ class ProjectXAdapter extends BaseAdapter {
       );
 
       const authData = response.data;
+      console.log('[ProjectX] Auth response:', JSON.stringify(authData, null, 2));
       
       if (!authData.success) {
-        throw new Error('Authentication failed - success is false');
+        throw new Error(`Authentication failed - success is false. Response: ${JSON.stringify(authData)}`);
       }
 
       if (!authData.token) {
@@ -42,7 +45,7 @@ class ProjectXAdapter extends BaseAdapter {
 
       return authData.token;
     } catch (error) {
-      console.error('ProjectX authentication error:', error.response?.data || error.message);
+      console.error('[ProjectX] Full authentication error:', error.response?.data || error.message);
       throw new Error(`ProjectX authentication failed: ${error.response?.data?.message || error.message}`);
     }
   }
