@@ -12,6 +12,7 @@ const express = require('express');
 const router = express.Router();
 const db = require('../config/database');
 const { encrypt } = require('../utils/encryption');
+const { isFirmSupported, getPlatformForFirm, getProjectXSubdomain, getSupportedFirms, requiresPlatformChoice } = require('../adapters');
 
 // ============================================
 // GET ALL TRADERS (for leaderboard)
@@ -135,11 +136,12 @@ router.get('/:username', async (req, res) => {
 // ============================================
 // POST /api/traders/add
 // Validates API key, encrypts it, saves trader, runs initial sync
+// NOW SUPPORTS MULTIPLE PROP FIRMS!
 // ============================================
 
 router.post('/add', async (req, res) => {
   try {
-    const { twitterUsername, authToken, propFirm, projectxUsername, projectxApiKey } = req.body;
+    const { twitterUsername, authToken, propFirm, platformChoice, projectxUsername, projectxApiKey } = req.body;
 
     // Verify Twitter auth token
     if (!authToken) {
@@ -179,16 +181,38 @@ router.post('/add', async (req, res) => {
     }
 
     // Validate required fields
-    if (!twitterUsername || !projectxUsername || !projectxApiKey) {
+    if (!twitterUsername || !projectxUsername || !projectxApiKey || !propFirm) {
       return res.status(400).json({ 
-        error: 'All fields are required' 
+        error: 'All fields are required (Twitter username, prop firm, username, API key)' 
       });
     }
 
-    // Only Lucid is supported for now
-    if (propFirm !== 'lucid') {
+    // Check if firm is supported
+    if (!isFirmSupported(propFirm)) {
       return res.status(400).json({ 
-        error: 'Only Lucid Trading is supported at this time' 
+        error: `Prop firm "${propFirm}" is not supported.` 
+      });
+    }
+
+    // Check if firm requires platform choice
+    if (requiresPlatformChoice(propFirm) && !platformChoice) {
+      return res.status(400).json({ 
+        error: `${propFirm} requires platform selection (CQG or Rithmic)` 
+      });
+    }
+
+    // Get platform for this firm
+    let platform;
+    try {
+      platform = getPlatformForFirm(propFirm, platformChoice);
+    } catch (error) {
+      return res.status(400).json({ error: error.message });
+    }
+
+    // Check if platform is implemented
+    if (platform !== 'projectx') {
+      return res.status(400).json({ 
+        error: `${platform.toUpperCase()} is not yet implemented. Only ProjectX-based firms (Topstep) are supported at this time.` 
       });
     }
 
@@ -205,10 +229,11 @@ router.post('/add', async (req, res) => {
       });
     }
 
-    // Validate API key by testing authentication with ProjectX
-    const apiUrl = process.env.PROJECTX_API_URL;
-    console.log(`Validating API key for ${twitterUsername}...`);
+    // Get the correct ProjectX subdomain for this firm
+    const apiUrl = getProjectXSubdomain(propFirm);
+    console.log(`Validating API key for ${twitterUsername} on ${propFirm} (${apiUrl})...`);
 
+    // Validate API key by testing authentication
     try {
       const authResponse = await fetch(`${apiUrl}/Auth/loginKey`, {
         method: 'POST',
@@ -223,11 +248,11 @@ router.post('/add', async (req, res) => {
       
       if (!authData.success) {
         return res.status(401).json({ 
-          error: 'Invalid ProjectX credentials. Please check your username and API key.' 
+          error: `Invalid ${propFirm} credentials. Please check your username and API key.` 
         });
       }
 
-      console.log('✅ API key validated successfully');
+      console.log(`✅ API key validated successfully for ${propFirm}`);
     } catch (error) {
       console.error('API validation error:', error);
       return res.status(500).json({ 
@@ -238,7 +263,7 @@ router.post('/add', async (req, res) => {
     // Encrypt the API key before storing
     const encryptedApiKey = encrypt(projectxApiKey.trim());
     
-    // Insert new trader
+    // Insert new trader with firm and platform
     const { data: newTrader, error: insertError } = await db
       .from('traders')
       .insert([
@@ -246,6 +271,7 @@ router.post('/add', async (req, res) => {
           twitter_username: twitterUsername,
           projectx_username: projectxUsername.trim(),
           projectx_api_key: encryptedApiKey,
+          firm: propFirm.toLowerCase().trim(),
           avatar: '🏆', // Default avatar
           account_created: new Date().toISOString()
         }
@@ -255,7 +281,7 @@ router.post('/add', async (req, res) => {
 
     if (insertError) throw insertError;
 
-    console.log(`✅ Trader ${twitterUsername} added successfully`);
+    console.log(`✅ Trader ${twitterUsername} added successfully with firm: ${propFirm}, platform: ${platform}`);
 
     // Trigger initial sync (async - don't wait for it)
     fetch(`${process.env.BACKEND_URL || 'http://localhost:3001'}/api/sync/all`, {
@@ -266,12 +292,31 @@ router.post('/add', async (req, res) => {
       message: 'Profile added successfully! Your stats are being synced.',
       trader: {
         twitter: newTrader.twitter_username,
+        firm: newTrader.firm,
+        platform: platform,
         id: newTrader.id
       }
     });
   } catch (error) {
     console.error('Error adding trader:', error);
     res.status(500).json({ error: 'Failed to add profile. Please try again.' });
+  }
+});
+
+// ============================================
+// GET SUPPORTED FIRMS
+// ============================================
+// GET /api/traders/firms/supported
+// Returns list of all supported prop firms with metadata
+// ============================================
+
+router.get('/firms/supported', (req, res) => {
+  try {
+    const firms = getSupportedFirms();
+    res.json(firms);
+  } catch (error) {
+    console.error('Error fetching supported firms:', error);
+    res.status(500).json({ error: 'Failed to fetch supported firms' });
   }
 });
 
@@ -301,6 +346,7 @@ router.post('/', async (req, res) => {
           twitter_username: twitterUsername,
           projectx_api_key: encryptedApiKey,
           projectx_username: projectxUsername.trim(),
+          firm: 'lucid', // Default to lucid for backwards compatibility
           avatar: '👤', // Default avatar
           account_created: new Date().toISOString()
         }
