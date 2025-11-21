@@ -22,19 +22,25 @@ class ProjectXAdapter extends BaseAdapter {
       const response = await axios.post(
         `${this.baseURL}/Auth/loginKey`,
         {
-          username,
-          apiKey
+          userName: username,  // ProjectX uses "userName" not "username"
+          apiKey: apiKey
         },
         {
           headers: { 'Content-Type': 'application/json' }
         }
       );
 
-      if (!response.data || !response.data.token) {
+      const authData = response.data;
+      
+      if (!authData.success) {
+        throw new Error('Authentication failed - success is false');
+      }
+
+      if (!authData.token) {
         throw new Error('No token received from ProjectX API');
       }
 
-      return response.data.token;
+      return authData.token;
     } catch (error) {
       console.error('ProjectX authentication error:', error.response?.data || error.message);
       throw new Error(`ProjectX authentication failed: ${error.response?.data?.message || error.message}`);
@@ -48,8 +54,9 @@ class ProjectXAdapter extends BaseAdapter {
    */
   async getAccounts(token) {
     try {
-      const response = await axios.get(
+      const response = await axios.post(
         `${this.baseURL}/Account/search`,
+        {},  // Empty body for search all
         {
           headers: {
             'Authorization': `Bearer ${token}`,
@@ -58,11 +65,14 @@ class ProjectXAdapter extends BaseAdapter {
         }
       );
 
-      if (!response.data || !Array.isArray(response.data)) {
+      const accountData = response.data;
+      const accounts = accountData.accounts || [];
+
+      if (!Array.isArray(accounts)) {
         throw new Error('Invalid accounts response from ProjectX API');
       }
 
-      return response.data;
+      return accounts;
     } catch (error) {
       console.error('ProjectX getAccounts error:', error.response?.data || error.message);
       throw new Error(`Failed to fetch accounts: ${error.response?.data?.message || error.message}`);
@@ -77,24 +87,25 @@ class ProjectXAdapter extends BaseAdapter {
    */
   async getTrades(token, accountId) {
     try {
-      const response = await axios.get(
+      const response = await axios.post(
         `${this.baseURL}/Trade/search`,
+        { accountId: accountId },
         {
           headers: {
             'Authorization': `Bearer ${token}`,
             'Content-Type': 'application/json'
-          },
-          params: {
-            accountId
           }
         }
       );
 
-      if (!response.data || !Array.isArray(response.data)) {
+      const tradesData = response.data;
+      const trades = tradesData.trades || [];
+
+      if (!Array.isArray(trades)) {
         return []; // No trades yet is valid
       }
 
-      return response.data;
+      return trades;
     } catch (error) {
       console.error('ProjectX getTrades error:', error.response?.data || error.message);
       // Don't throw on trades error - some accounts might not have trades yet
@@ -114,29 +125,29 @@ class ProjectXAdapter extends BaseAdapter {
       return sum + (parseFloat(account.balance) || 0);
     }, 0);
 
-    // Calculate total profit from closed trades
-    const closedTrades = trades.filter(trade => trade.status === 'closed');
-    const totalProfit = closedTrades.reduce((sum, trade) => {
-      return sum + (parseFloat(trade.profit) || 0);
+    // Calculate total profit from trades with profitAndLoss
+    const validTrades = trades.filter(trade => trade.profitAndLoss !== null);
+    const totalProfit = validTrades.reduce((sum, trade) => {
+      return sum + (parseFloat(trade.profitAndLoss) || 0);
     }, 0);
 
     // Calculate win rate
-    const winningTrades = closedTrades.filter(trade => parseFloat(trade.profit) > 0);
-    const winRate = closedTrades.length > 0 
-      ? (winningTrades.length / closedTrades.length) * 100 
+    const winningTrades = validTrades.filter(trade => parseFloat(trade.profitAndLoss) > 0);
+    const winRate = validTrades.length > 0 
+      ? (winningTrades.length / validTrades.length) * 100 
       : 0;
 
-    // Calculate monthly profit (trades from last 30 days)
-    const thirtyDaysAgo = new Date();
-    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+    // Calculate monthly profit (trades from this month)
+    const now = new Date();
+    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
     
-    const monthlyTrades = closedTrades.filter(trade => {
-      const tradeDate = new Date(trade.closeTime || trade.openTime);
-      return tradeDate >= thirtyDaysAgo;
+    const monthlyTrades = validTrades.filter(trade => {
+      const tradeDate = new Date(trade.creationTimestamp);
+      return tradeDate >= monthStart;
     });
     
     const monthlyProfit = monthlyTrades.reduce((sum, trade) => {
-      return sum + (parseFloat(trade.profit) || 0);
+      return sum + (parseFloat(trade.profitAndLoss) || 0);
     }, 0);
 
     // Calculate verified payouts (accounts with withdrawals)
@@ -150,7 +161,7 @@ class ProjectXAdapter extends BaseAdapter {
       winRate: parseFloat(winRate.toFixed(2)),
       monthlyProfit: parseFloat(monthlyProfit.toFixed(2)),
       verifiedPayouts: parseFloat(verifiedPayouts.toFixed(2)),
-      totalTrades: closedTrades.length,
+      totalTrades: validTrades.length,
       accountCount: accounts.length
     };
   }
