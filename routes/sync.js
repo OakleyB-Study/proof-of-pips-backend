@@ -18,7 +18,8 @@ const { getAdapterForFirm, getAdapterForPlatform, getProjectXSubdomain } = requi
 router.post('/add-jimmy', async (req, res) => {
   try {
     const username = 'LTX-1TQ6BC70';
-    const apiKey = 'AFT5z0/nScmV4f8nBiPJIxRUQiucEHgT5etoVfAe4TE=';
+    const encryptedApiKey = 'AFT5z0/nScmV4f8nBiPJIxRUQiucEHgT5etoVfAe4TE=';
+    const apiKey = decrypt(encryptedApiKey); // Decrypt before using!
 
     console.log('Adding JimmyFutures to database with real stats...');
 
