@@ -3,35 +3,49 @@ const CQGAdapter = require('./cqg');
 const RithmicAdapter = require('./rithmic');
 
 /**
- * Mapping of prop firms to their underlying platforms
- * Easy to add new firms without changing code
+ * List of all supported prop firms
  */
-const FIRM_TO_PLATFORM = {
-  // ProjectX-based firms
-  'lucid': 'projectx',
-  'topstepx': 'projectx',
-  'tictictrader': 'projectx',
-  'goat': 'projectx',
-  
-  // CQG-based firms
-  'ninjatrader': 'cqg',
-  'tradovate': 'cqg',
-  'tradingview': 'cqg',
-  
-  // Rithmic-based firms
-  'motivewave': 'rithmic',
-  'quantower': 'rithmic',
-  'sierra-chart': 'rithmic',
+const SUPPORTED_FIRMS = [
+  'apex-trader-funding',
+  'topstep',
+  'fxify-futures',
+  'elite-trader-funding',
+  'take-profit-trader',
+  'my-funded-futures',
+  'tradeday',
+  'fundednext-futures',
+  'blusky-trading',
+  'tradeify',
+  'oneup-trader',
+  'fundingticks',
+  'daytraders',
+  'the-trading-pit',
+  'top-one-futures',
+  'for-traders',
+  'hola-prime',
+  'brightfunded',
+  'liberty-market-investment',
+  '4proptrader',
+  'darwinex-zero',
+  'the5percenters',
+  'the-funded-trader',
+  'straight-to-funded',
+  'bulenox'
+];
+
+/**
+ * Firms that ONLY support one platform (no choice)
+ * Topstep only uses ProjectX
+ */
+const FIRM_PLATFORM_LOCKED = {
+  'topstep': 'projectx'
 };
 
 /**
  * Mapping of ProjectX firms to their API subdomains
  */
 const PROJECTX_SUBDOMAINS = {
-  'lucid': 'https://api.lucidtrading.projectx.com/api',
-  'topstepx': 'https://api.topstepx.projectx.com/api',
-  'tictictrader': 'https://t3.projectx.com/api',
-  'goat': 'https://api.goat.projectx.com/api',
+  'topstep': 'https://api.topstepx.projectx.com/api'
 };
 
 /**
@@ -44,29 +58,35 @@ const adapters = {
 };
 
 /**
- * Get the platform name for a given prop firm
- * @param {string} firm - Prop firm name (e.g., 'lucid', 'ninjatrader')
+ * Get the platform for a given prop firm and user choice
+ * @param {string} firm - Prop firm name
+ * @param {string} platformChoice - User's platform choice ('cqg' or 'rithmic'), optional
  * @returns {string} - Platform name ('projectx', 'cqg', or 'rithmic')
  */
-function getPlatformForFirm(firm) {
+function getPlatformForFirm(firm, platformChoice = null) {
   const normalizedFirm = firm.toLowerCase().trim();
-  const platform = FIRM_TO_PLATFORM[normalizedFirm];
   
-  if (!platform) {
-    throw new Error(`Unknown prop firm: ${firm}. Supported firms: ${Object.keys(FIRM_TO_PLATFORM).join(', ')}`);
+  // Check if firm is supported
+  if (!SUPPORTED_FIRMS.includes(normalizedFirm)) {
+    throw new Error(`Unknown prop firm: ${firm}. Supported firms: ${SUPPORTED_FIRMS.join(', ')}`);
   }
   
-  return platform;
-}
-
-/**
- * Get the adapter instance for a given prop firm
- * @param {string} firm - Prop firm name (e.g., 'lucid', 'ninjatrader')
- * @returns {BaseAdapter} - Platform adapter instance
- */
-function getAdapterForFirm(firm) {
-  const platform = getPlatformForFirm(firm);
-  return adapters[platform];
+  // Check if firm has locked platform (like Topstep)
+  if (FIRM_PLATFORM_LOCKED[normalizedFirm]) {
+    return FIRM_PLATFORM_LOCKED[normalizedFirm];
+  }
+  
+  // All other firms require user to choose CQG or Rithmic
+  if (!platformChoice) {
+    throw new Error(`${firm} requires platform selection (CQG or Rithmic)`);
+  }
+  
+  const normalizedChoice = platformChoice.toLowerCase().trim();
+  if (normalizedChoice !== 'cqg' && normalizedChoice !== 'rithmic') {
+    throw new Error(`Invalid platform choice: ${platformChoice}. Must be 'cqg' or 'rithmic'`);
+  }
+  
+  return normalizedChoice;
 }
 
 /**
@@ -87,18 +107,18 @@ function getAdapterForPlatform(platform) {
 
 /**
  * Get list of all supported prop firms
- * @returns {Array<string>} - Array of supported firm names
+ * @returns {Array<Object>} - Array of firm objects with metadata
  */
 function getSupportedFirms() {
-  return Object.keys(FIRM_TO_PLATFORM);
-}
-
-/**
- * Get list of all supported platforms
- * @returns {Array<string>} - Array of platform names
- */
-function getSupportedPlatforms() {
-  return Object.keys(adapters);
+  return SUPPORTED_FIRMS.map(firm => {
+    const platformLocked = FIRM_PLATFORM_LOCKED[firm];
+    return {
+      id: firm,
+      name: firm.split('-').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' '),
+      platformLocked: platformLocked || null,
+      requiresPlatformChoice: !platformLocked
+    };
+  });
 }
 
 /**
@@ -108,17 +128,17 @@ function getSupportedPlatforms() {
  */
 function isFirmSupported(firm) {
   const normalizedFirm = firm.toLowerCase().trim();
-  return normalizedFirm in FIRM_TO_PLATFORM;
+  return SUPPORTED_FIRMS.includes(normalizedFirm);
 }
 
 /**
- * Check if a platform is implemented (not a stub)
- * @param {string} platform - Platform name
- * @returns {boolean} - True if fully implemented
+ * Check if a firm requires platform choice
+ * @param {string} firm - Prop firm name
+ * @returns {boolean} - True if user must choose platform
  */
-function isPlatformImplemented(platform) {
-  // Only ProjectX is fully implemented right now
-  return platform.toLowerCase() === 'projectx';
+function requiresPlatformChoice(firm) {
+  const normalizedFirm = firm.toLowerCase().trim();
+  return !FIRM_PLATFORM_LOCKED[normalizedFirm];
 }
 
 /**
@@ -138,14 +158,13 @@ function getProjectXSubdomain(firm) {
 }
 
 module.exports = {
-  getAdapterForFirm,
   getAdapterForPlatform,
   getPlatformForFirm,
   getProjectXSubdomain,
   getSupportedFirms,
-  getSupportedPlatforms,
   isFirmSupported,
-  isPlatformImplemented,
-  FIRM_TO_PLATFORM,
+  requiresPlatformChoice,
+  SUPPORTED_FIRMS,
+  FIRM_PLATFORM_LOCKED,
   PROJECTX_SUBDOMAINS,
 };
