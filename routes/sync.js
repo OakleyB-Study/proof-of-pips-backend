@@ -6,7 +6,7 @@ const express = require('express');
 const router = express.Router();
 const db = require('../config/database');
 const { decrypt } = require('../utils/encryption');
-const { getAdapterForFirm, getAdapterForPlatform } = require('../adapters');
+const { getAdapterForFirm, getAdapterForPlatform, getProjectXSubdomain } = require('../adapters');
 
 // ============================================
 // ADD/SYNC JIMMYFUTURES
@@ -22,8 +22,9 @@ router.post('/add-jimmy', async (req, res) => {
 
     console.log('Adding JimmyFutures to database with real stats...');
 
-    // Use ProjectX adapter
+    // Use ProjectX adapter with Lucid's URL (Jimmy uses Lucid)
     const adapter = getAdapterForPlatform('projectx');
+    adapter.baseURL = 'https://api.lucidtrading.projectx.com/api';
     const stats = await adapter.sync(username, apiKey);
 
     console.log('Stats calculated:', stats);
@@ -117,10 +118,14 @@ async function syncSingleTrader(trader) {
     // Decrypt API key before using
     const decryptedApiKey = decrypt(trader.projectx_api_key);
 
-    // Get the correct adapter based on trader's platform
-    // For now, all existing traders use ProjectX
-    // In the future, this will check trader.platform or trader.firm
+    // Get the correct adapter based on trader's firm
     const adapter = getAdapterForPlatform('projectx');
+    
+    // If trader has a firm, set the correct ProjectX subdomain
+    if (trader.firm) {
+      adapter.baseURL = getProjectXSubdomain(trader.firm);
+      console.log(`Using ${trader.firm} subdomain: ${adapter.baseURL}`);
+    }
     
     // Sync using adapter (handles all API calls and calculations)
     const stats = await adapter.sync(trader.projectx_username.trim(), decryptedApiKey);
