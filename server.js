@@ -13,6 +13,7 @@ require('dotenv').config();
 const tradersRoutes = require('./routes/traders');
 const syncRoutes = require('./routes/sync');
 const authRoutes = require('./routes/auth'); // Twitter OAuth
+const journalRoutes = require('./routes/journal'); // Journal entries
 const { startCronJobs } = require('./cron-sync'); // NEW: Import cron jobs
 const { generalLimiter, syncLimiter } = require('./middleware/rateLimiter'); // Rate limiting
 
@@ -68,6 +69,7 @@ app.use((req, res, next) => {
 app.use('/api/traders', tradersRoutes);
 app.use('/api/sync', syncLimiter, syncRoutes); // Add rate limiter to sync routes
 app.use('/api/auth', authRoutes); // Twitter OAuth routes
+app.use('/api/journal', journalRoutes); // Journal entries routes
 
 // ============================================
 // HEALTH CHECK ENDPOINT
