@@ -11,6 +11,7 @@
 const SENSITIVE_FIELDS = [
   'password', 'secretKey', 'apiKey', 'tradeSyncerApiKey',
   'tradovatePassword', 'tradovateClientId', 'tradovateSecretKey',
+  'tradovateAccessToken',
   'authToken', 'access_token', 'accessToken', 'auth_token',
 ];
 

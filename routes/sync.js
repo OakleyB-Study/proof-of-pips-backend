@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const db = require('../config/database');
-const { decrypt } = require('../utils/encryption');
+const { decrypt, encrypt } = require('../utils/encryption');
 const { getAdapter } = require('../adapters');
 const { logSecurityEvent } = require('../middleware/auditLogger');
 const { validateTwitterUsername, validateConnectionType } = require('../middleware/inputSanitizer');
@@ -10,6 +10,62 @@ const { validateTwitterUsername, validateConnectionType } = require('../middlewa
 // SYNC SINGLE TRADER (internal helper)
 // CJIS 5.4: All data modifications are audit logged
 // ============================================
+
+/**
+ * Sync a Tradovate trader using stored access token.
+ * Handles token expiry checks and renewal fallback.
+ */
+async function syncTradovateTrader(trader, adapter) {
+  // Skip traders already marked as expired
+  if (trader.auth_status === 'expired') {
+    logSecurityEvent('SYNC_SKIPPED_EXPIRED', { username: trader.twitter_username });
+    return { skipped: true, reason: 'Token expired — awaiting re-authentication' };
+  }
+
+  // Check if token has passed its expiration time
+  if (trader.tradovate_token_expires_at) {
+    const expiresAt = new Date(trader.tradovate_token_expires_at);
+    if (expiresAt <= new Date()) {
+      await db.from('traders').update({ auth_status: 'expired' }).eq('id', trader.id);
+      logSecurityEvent('TOKEN_EXPIRED', { username: trader.twitter_username });
+      return { skipped: true, reason: 'Token expired — awaiting re-authentication' };
+    }
+  }
+
+  const storedToken = trader.tradovate_access_token ? decrypt(trader.tradovate_access_token) : '';
+  if (!storedToken) {
+    await db.from('traders').update({ auth_status: 'expired' }).eq('id', trader.id);
+    return { skipped: true, reason: 'No access token stored' };
+  }
+
+  try {
+    // Try sync with the stored token
+    return await adapter.syncWithToken({ accessToken: storedToken });
+  } catch (error) {
+    // On auth failure, attempt token renewal
+    if (error.message?.includes('401') || error.message?.includes('authentication') || error.message?.includes('Unauthorized')) {
+      logSecurityEvent('TOKEN_RENEWAL_ATTEMPT', { username: trader.twitter_username });
+      try {
+        const renewed = await adapter.renewToken(storedToken);
+        // Store the renewed token
+        await db.from('traders').update({
+          tradovate_access_token: encrypt(renewed.accessToken),
+          tradovate_token_expires_at: renewed.expirationTime,
+          auth_status: 'active',
+        }).eq('id', trader.id);
+        logSecurityEvent('TOKEN_RENEWED', { username: trader.twitter_username });
+        // Retry sync with renewed token
+        return await adapter.syncWithToken({ accessToken: renewed.accessToken });
+      } catch (renewError) {
+        // Renewal failed — mark as expired so user re-authenticates
+        await db.from('traders').update({ auth_status: 'expired' }).eq('id', trader.id);
+        logSecurityEvent('TOKEN_RENEWAL_FAILED', { username: trader.twitter_username });
+        throw new Error('Access token expired and renewal failed. Re-authentication required.');
+      }
+    }
+    throw error;
+  }
+}
 
 async function syncSingleTrader(trader) {
   try {
@@ -20,24 +76,23 @@ async function syncSingleTrader(trader) {
     });
 
     const adapter = getAdapter(trader.connection_type);
-    let credentials;
+    let result;
 
     if (trader.connection_type === 'tradovate') {
-      credentials = {
-        username: trader.tradovate_username,
-        password: trader.tradovate_access_token ? decrypt(trader.tradovate_access_token) : '',
-        clientId: trader.tradovate_client_id || '',
-        secretKey: trader.tradovate_refresh_token ? decrypt(trader.tradovate_refresh_token) : '',
-      };
+      const tradovateResult = await syncTradovateTrader(trader, adapter);
+      if (tradovateResult.skipped) {
+        return { success: false, trader: trader.twitter_username, error: tradovateResult.reason };
+      }
+      result = tradovateResult;
     } else if (trader.connection_type === 'tradesyncer') {
-      credentials = {
+      const credentials = {
         apiKey: trader.tradesyncer_api_key ? decrypt(trader.tradesyncer_api_key) : '',
       };
+      result = await adapter.sync(credentials);
     } else {
       throw new Error(`Unsupported connection type: ${trader.connection_type}`);
     }
 
-    const result = await adapter.sync(credentials);
     const stats = result.stats;
 
     // Track unique account IDs (high-water mark - only goes up, never down)

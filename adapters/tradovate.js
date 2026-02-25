@@ -275,7 +275,44 @@ class TradovateAdapter extends BaseAdapter {
   }
 
   /**
-   * Full sync process for Tradovate.
+   * Sync using a pre-existing access token (no re-authentication).
+   * Used by the hourly cron when we already have a valid token stored.
+   *
+   * @param {Object} authContext - { accessToken }
+   * @returns {Promise<Object>} - { stats, trades, accounts }
+   */
+  async syncWithToken(authContext) {
+    try {
+      console.log(`[Tradovate] Starting token-based sync`);
+
+      const accounts = await this.getAccounts(authContext);
+      console.log(`[Tradovate] Found ${accounts.length} accounts`);
+
+      const allTrades = [];
+      for (const account of accounts) {
+        let trades = await this.getFillPairs(authContext, account.id);
+        if (trades.length === 0) {
+          trades = await this.getTrades(authContext, account.id);
+        }
+        if (trades.length === 0) {
+          trades = await this.getCashBalanceTrades(authContext, account.id);
+        }
+        allTrades.push(...trades);
+      }
+      console.log(`[Tradovate] Found ${allTrades.length} total trades`);
+
+      const stats = this.calculateStats(allTrades);
+
+      return { stats, trades: allTrades, accounts };
+    } catch (error) {
+      console.error(`[Tradovate] Token-based sync failed:`, error.message);
+      throw error;
+    }
+  }
+
+  /**
+   * Full sync process for Tradovate (with authentication).
+   * Used during initial registration when we have the password.
    *
    * Trade data priority:
    *   1. fillPair/list - round-trip trades with entry/exit/P&L (best)

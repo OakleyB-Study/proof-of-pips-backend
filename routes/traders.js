@@ -40,6 +40,7 @@ router.get('/', async (req, res) => {
           propFirmDisplay: trader.prop_firm_display,
           connectionType: trader.connection_type,
           totalAccountsLinked: trader.total_accounts_linked || 0,
+          authStatus: trader.auth_status || 'active',
           updatedAt: stats?.updated_at,
         };
       });
@@ -116,6 +117,7 @@ router.get('/:username', async (req, res) => {
       propFirmDisplay: data.prop_firm_display,
       connectionType: data.connection_type,
       totalAccountsLinked: data.total_accounts_linked || 0,
+      authStatus: data.auth_status || 'active',
       updatedAt: stats?.updated_at,
     };
 
@@ -236,15 +238,16 @@ router.post('/add', createTraderLimiter, async (req, res) => {
       credentials = { apiKey: sanitizeString(tradeSyncerApiKey) };
     }
 
-    // Test the credentials
+    // Authenticate and obtain access token
     logSecurityEvent('CREDENTIAL_VALIDATION_START', {
       username: normalizedUsername,
       connectionType,
       sourceIp: req.ip,
     });
 
+    let authResult;
     try {
-      await adapter.authenticate(credentials);
+      authResult = await adapter.authenticate(credentials);
       logSecurityEvent('CREDENTIAL_VALIDATION_SUCCESS', { username: normalizedUsername, connectionType });
     } catch (error) {
       logSecurityEvent('CREDENTIAL_VALIDATION_FAILED', {
@@ -273,7 +276,10 @@ router.post('/add', createTraderLimiter, async (req, res) => {
     if (connectionType === 'tradovate') {
       traderRecord.tradovate_username = sanitizeString(tradovateUsername);
       if (tradovateClientId) traderRecord.tradovate_client_id = sanitizeString(tradovateClientId);
-      if (tradovatePassword) traderRecord.tradovate_access_token = encrypt(tradovatePassword);
+      // Store the ACCESS TOKEN (not password) — password is never persisted
+      traderRecord.tradovate_access_token = encrypt(authResult.accessToken);
+      traderRecord.tradovate_token_expires_at = authResult.expirationTime || null;
+      traderRecord.auth_status = 'active';
       if (tradovateSecretKey) traderRecord.tradovate_refresh_token = encrypt(tradovateSecretKey);
     } else {
       traderRecord.tradesyncer_api_key = encrypt(sanitizeString(tradeSyncerApiKey));
@@ -328,6 +334,109 @@ router.post('/add', createTraderLimiter, async (req, res) => {
       message: error.message,
     }));
     res.status(500).json({ error: 'Failed to add profile. Please try again.' });
+  }
+});
+
+// ============================================
+// RE-AUTHENTICATE TRADER (token expired)
+// POST /api/traders/reauth
+// User enters password again to get a new token
+// ============================================
+
+router.post('/reauth', createTraderLimiter, async (req, res) => {
+  try {
+    const { twitterUsername, authToken, tradovatePassword } = req.body;
+
+    // STIG: Validate Twitter username
+    const usernameValidation = validateTwitterUsername(twitterUsername);
+    if (!usernameValidation.valid) {
+      return res.status(400).json({ error: usernameValidation.error });
+    }
+    const normalizedUsername = usernameValidation.sanitized;
+
+    // Verify Twitter auth token
+    if (!authToken || typeof authToken !== 'string') {
+      return res.status(401).json({ error: 'Twitter authentication required.' });
+    }
+
+    try {
+      const verifyResponse = await fetch(`${process.env.BACKEND_URL || 'http://localhost:3001'}/api/auth/verify`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ authToken }),
+      });
+      const verifyData = await verifyResponse.json();
+
+      if (!verifyResponse.ok || !verifyData.verified) {
+        logSecurityEvent('REAUTH_VERIFY_REJECTED', { username: normalizedUsername, sourceIp: req.ip });
+        return res.status(401).json({ error: 'Invalid or expired Twitter authentication.' });
+      }
+
+      if (verifyData.twitterUsername !== normalizedUsername) {
+        logSecurityEvent('REAUTH_USERNAME_MISMATCH', { claimed: normalizedUsername, actual: verifyData.twitterUsername });
+        return res.status(401).json({ error: 'Twitter username mismatch.' });
+      }
+    } catch (error) {
+      return res.status(401).json({ error: 'Failed to verify Twitter authentication' });
+    }
+
+    // Look up existing trader
+    const { data: trader, error: lookupError } = await db
+      .from('traders')
+      .select('*')
+      .eq('twitter_username', normalizedUsername)
+      .single();
+
+    if (lookupError || !trader) {
+      return res.status(404).json({ error: 'Trader not found' });
+    }
+
+    if (trader.connection_type !== 'tradovate') {
+      return res.status(400).json({ error: 'Re-authentication is only needed for Tradovate connections.' });
+    }
+
+    if (!tradovatePassword) {
+      return res.status(400).json({ error: 'Tradovate password is required.' });
+    }
+
+    // Re-authenticate using stored username/clientId/secretKey + new password
+    const adapter = getAdapter('tradovate');
+    const credentials = {
+      username: trader.tradovate_username,
+      password: tradovatePassword,
+      clientId: trader.tradovate_client_id || '',
+      secretKey: trader.tradovate_refresh_token ? require('../utils/encryption').decrypt(trader.tradovate_refresh_token) : '',
+    };
+
+    logSecurityEvent('REAUTH_ATTEMPT', { username: normalizedUsername, sourceIp: req.ip });
+
+    let authResult;
+    try {
+      authResult = await adapter.authenticate(credentials);
+    } catch (error) {
+      logSecurityEvent('REAUTH_FAILED', { username: normalizedUsername, sourceIp: req.ip });
+      return res.status(401).json({ error: 'Invalid Tradovate credentials. Please check and try again.' });
+    }
+
+    // Store new token — password is never persisted
+    await db.from('traders').update({
+      tradovate_access_token: encrypt(authResult.accessToken),
+      tradovate_token_expires_at: authResult.expirationTime || null,
+      auth_status: 'active',
+      updated_at: new Date().toISOString(),
+    }).eq('id', trader.id);
+
+    logSecurityEvent('REAUTH_SUCCESS', { username: normalizedUsername });
+
+    res.json({ success: true, message: 'Re-authenticated successfully. Your stats will sync shortly.' });
+  } catch (error) {
+    console.error(JSON.stringify({
+      timestamp: new Date().toISOString(),
+      level: 'ERROR',
+      event: 'REAUTH_ERROR',
+      message: error.message,
+    }));
+    res.status(500).json({ error: 'Re-authentication failed. Please try again.' });
   }
 });
 
