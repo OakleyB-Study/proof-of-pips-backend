@@ -1,44 +1,67 @@
 // backend/cron-sync.js
 // Cron job that runs every hour to sync all traders
+// CJIS 5.4: All sync operations are logged with structured audit entries
 
 const cron = require('node-cron');
 const axios = require('axios');
 
 const BACKEND_URL = process.env.BACKEND_URL || 'http://localhost:3001';
-
-// CST is UTC-6, so:
-// 12:00 AM CST = 6:00 AM UTC (06:00)
-// 8:30 AM CST = 2:30 PM UTC (14:30)
-// 3:30 PM CST = 9:30 PM UTC (21:30)
+const SYNC_API_KEY = process.env.SYNC_API_KEY;
 
 async function syncAllTraders() {
+  if (!SYNC_API_KEY) {
+    console.error(JSON.stringify({
+      timestamp: new Date().toISOString(),
+      level: 'ERROR',
+      event: 'CRON_SYNC_SKIPPED',
+      reason: 'SYNC_API_KEY not configured',
+    }));
+    return;
+  }
+
   try {
-    console.log(`🔄 [${new Date().toISOString()}] Running scheduled sync...`);
-    
-    const response = await axios.post(`${BACKEND_URL}/api/sync/all`);
-    
-    console.log(`✅ [${new Date().toISOString()}] Sync completed:`, response.data);
+    console.log(JSON.stringify({
+      timestamp: new Date().toISOString(),
+      level: 'INFO',
+      event: 'CRON_SYNC_START',
+    }));
+
+    const response = await axios.post(`${BACKEND_URL}/api/sync/all`, {}, {
+      headers: {
+        'Authorization': `Bearer ${SYNC_API_KEY}`,
+        'Content-Type': 'application/json',
+      },
+    });
+
+    console.log(JSON.stringify({
+      timestamp: new Date().toISOString(),
+      level: 'INFO',
+      event: 'CRON_SYNC_COMPLETE',
+      traderssynced: response.data?.results?.length || 0,
+    }));
   } catch (error) {
-    console.error(`❌ [${new Date().toISOString()}] Sync failed:`, error.message);
+    console.error(JSON.stringify({
+      timestamp: new Date().toISOString(),
+      level: 'ERROR',
+      event: 'CRON_SYNC_FAILED',
+      message: error.message,
+    }));
   }
 }
 
-// Schedule jobs
-// Format: minute hour day month day-of-week
-// '0 * * * *' = Every hour at minute 0 (1:00, 2:00, 3:00, etc.)
-
 function startCronJobs() {
-  console.log('🚀 Starting cron jobs...');
-  
-  // Every hour at minute 0
+  console.log(JSON.stringify({
+    timestamp: new Date().toISOString(),
+    level: 'INFO',
+    event: 'CRON_JOBS_STARTED',
+    schedule: 'Every hour at :00 UTC',
+  }));
+
   cron.schedule('0 * * * *', async () => {
-    console.log('⏰ Hourly sync triggered');
     await syncAllTraders();
   }, {
     timezone: "UTC"
   });
-
-  console.log('✅ Cron job scheduled: Every hour at :00');
 }
 
 module.exports = { startCronJobs, syncAllTraders };

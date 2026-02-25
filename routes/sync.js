@@ -3,14 +3,21 @@ const router = express.Router();
 const db = require('../config/database');
 const { decrypt } = require('../utils/encryption');
 const { getAdapter } = require('../adapters');
+const { logSecurityEvent } = require('../middleware/auditLogger');
+const { validateTwitterUsername, validateConnectionType } = require('../middleware/inputSanitizer');
 
 // ============================================
 // SYNC SINGLE TRADER (internal helper)
+// CJIS 5.4: All data modifications are audit logged
 // ============================================
 
 async function syncSingleTrader(trader) {
   try {
-    console.log(`Syncing trader: @${trader.twitter_username} (${trader.connection_type})`);
+    logSecurityEvent('SYNC_TRADER_START', {
+      username: trader.twitter_username,
+      connectionType: trader.connection_type,
+      traderId: trader.id,
+    });
 
     const adapter = getAdapter(trader.connection_type);
     let credentials;
@@ -29,11 +36,10 @@ async function syncSingleTrader(trader) {
       throw new Error(`Unsupported connection type: ${trader.connection_type}`);
     }
 
-    // Run sync
     const result = await adapter.sync(credentials);
     const stats = result.stats;
 
-    // Upsert statistics
+    // Upsert statistics (atomic operation)
     const { error: statsError } = await db.from('statistics').upsert([{
       trader_id: trader.id,
       total_profit: stats.totalProfit,
@@ -69,7 +75,7 @@ async function syncSingleTrader(trader) {
       await db.from('trade_history').insert(recentTrades);
     }
 
-    // Log sync
+    // Audit log in database
     await db.from('sync_log').insert([{
       trader_id: trader.id,
       source: trader.connection_type,
@@ -80,10 +86,17 @@ async function syncSingleTrader(trader) {
 
     await db.from('traders').update({ updated_at: new Date().toISOString() }).eq('id', trader.id);
 
-    console.log(`Synced @${trader.twitter_username}: $${stats.totalProfit} profit, ${stats.totalTrades} trades`);
+    logSecurityEvent('SYNC_TRADER_SUCCESS', {
+      username: trader.twitter_username,
+      totalTrades: stats.totalTrades,
+    });
+
     return { success: true, trader: trader.twitter_username, stats };
   } catch (error) {
-    console.error(`Failed to sync @${trader.twitter_username}:`, error.message);
+    logSecurityEvent('SYNC_TRADER_FAILED', {
+      username: trader.twitter_username,
+      error: error.message,
+    });
 
     try {
       await db.from('sync_log').insert([{
@@ -102,11 +115,12 @@ async function syncSingleTrader(trader) {
 // ============================================
 // SYNC ALL TRADERS
 // POST /api/sync/all
+// Protected by syncAuth middleware (in server.js)
 // ============================================
 
 router.post('/all', async (req, res) => {
   try {
-    console.log('Starting sync for all traders...');
+    logSecurityEvent('SYNC_ALL_START', { sourceIp: req.ip });
 
     const { data: traders, error } = await db.from('traders').select('*');
     if (error) throw error;
@@ -124,7 +138,7 @@ router.post('/all', async (req, res) => {
     const successCount = results.filter(r => r.success).length;
     const failCount = results.filter(r => !r.success).length;
 
-    console.log(`Sync complete: ${successCount} successful, ${failCount} failed`);
+    logSecurityEvent('SYNC_ALL_COMPLETE', { successCount, failCount });
 
     res.json({
       success: true,
@@ -132,8 +146,9 @@ router.post('/all', async (req, res) => {
       results,
     });
   } catch (error) {
-    console.error('Error in sync-all:', error);
-    res.status(500).json({ success: false, error: error.message });
+    logSecurityEvent('SYNC_ALL_ERROR', { error: error.message });
+    // STIG: Don't leak internal error details
+    res.status(500).json({ success: false, error: 'Sync operation failed' });
   }
 });
 
@@ -146,10 +161,16 @@ router.post('/trader/:username', async (req, res) => {
   try {
     const { username } = req.params;
 
+    // STIG: Validate input
+    const validation = validateTwitterUsername(username);
+    if (!validation.valid) {
+      return res.status(400).json({ error: 'Invalid username format' });
+    }
+
     const { data: trader, error } = await db
       .from('traders')
       .select('*')
-      .eq('twitter_username', username)
+      .eq('twitter_username', validation.sanitized)
       .single();
 
     if (error || !trader) {
@@ -159,13 +180,14 @@ router.post('/trader/:username', async (req, res) => {
     const result = await syncSingleTrader(trader);
 
     if (result.success) {
-      res.json({ success: true, message: `Synced @${username}`, stats: result.stats });
+      res.json({ success: true, message: `Synced @${validation.sanitized}`, stats: result.stats });
     } else {
-      res.status(500).json({ success: false, error: result.error });
+      // STIG: Don't leak internal error details
+      res.status(500).json({ success: false, error: 'Sync failed for this trader' });
     }
   } catch (error) {
-    console.error('Error syncing trader:', error);
-    res.status(500).json({ success: false, error: error.message });
+    logSecurityEvent('SYNC_SINGLE_ERROR', { error: error.message });
+    res.status(500).json({ success: false, error: 'Sync operation failed' });
   }
 });
 
@@ -178,8 +200,8 @@ router.post('/test', async (req, res) => {
   try {
     const { connectionType, tradovateUsername, tradovatePassword, tradovateSecretKey, tradeSyncerApiKey } = req.body;
 
-    if (!connectionType) {
-      return res.status(400).json({ error: 'connectionType is required' });
+    if (!connectionType || !validateConnectionType(connectionType)) {
+      return res.status(400).json({ error: 'Valid connectionType is required (tradovate or tradesyncer)' });
     }
 
     const adapter = getAdapter(connectionType);
@@ -195,10 +217,14 @@ router.post('/test', async (req, res) => {
       credentials = { apiKey: tradeSyncerApiKey };
     }
 
+    logSecurityEvent('CREDENTIAL_TEST', { connectionType, sourceIp: req.ip });
+
     const auth = await adapter.authenticate(credentials);
     res.json({ success: true, message: 'Credentials are valid', user: auth.username || auth.name });
   } catch (error) {
-    res.status(401).json({ success: false, error: error.message });
+    logSecurityEvent('CREDENTIAL_TEST_FAILED', { connectionType: req.body?.connectionType, sourceIp: req.ip });
+    // STIG: Don't leak adapter-specific error details
+    res.status(401).json({ success: false, error: 'Invalid credentials' });
   }
 });
 
@@ -211,10 +237,15 @@ router.get('/history/:username', async (req, res) => {
   try {
     const { username } = req.params;
 
+    const validation = validateTwitterUsername(username);
+    if (!validation.valid) {
+      return res.status(400).json({ error: 'Invalid username format' });
+    }
+
     const { data: trader } = await db
       .from('traders')
       .select('id')
-      .eq('twitter_username', username)
+      .eq('twitter_username', validation.sanitized)
       .single();
 
     if (!trader) {
@@ -231,7 +262,12 @@ router.get('/history/:username', async (req, res) => {
     if (error) throw error;
     res.json(logs || []);
   } catch (error) {
-    console.error('Error fetching sync history:', error);
+    console.error(JSON.stringify({
+      timestamp: new Date().toISOString(),
+      level: 'ERROR',
+      event: 'FETCH_SYNC_HISTORY_FAILED',
+      message: error.message,
+    }));
     res.status(500).json({ error: 'Failed to fetch sync history' });
   }
 });
