@@ -5,7 +5,11 @@ const crypto = require('crypto');
 
 // IMPORTANT: Add this to your Railway environment variables
 // Generate with: node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
-const ENCRYPTION_KEY = process.env.ENCRYPTION_KEY || 'your-32-byte-hex-key-here'; // Must be 32 bytes (64 hex chars)
+const ENCRYPTION_KEY = process.env.ENCRYPTION_KEY;
+if (!ENCRYPTION_KEY || ENCRYPTION_KEY.length !== 64) {
+  console.error('ENCRYPTION_KEY must be exactly 64 hex characters. Generate with: node -e "console.log(require(\'crypto\').randomBytes(32).toString(\'hex\'))"');
+  process.exit(1);
+}
 const ALGORITHM = 'aes-256-gcm';
 
 /**

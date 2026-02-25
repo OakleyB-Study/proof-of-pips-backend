@@ -34,8 +34,7 @@ async function syncSingleTrader(trader) {
     const stats = result.stats;
 
     // Upsert statistics
-    await db.from('statistics').delete().eq('trader_id', trader.id);
-    const { error: statsError } = await db.from('statistics').insert([{
+    const { error: statsError } = await db.from('statistics').upsert([{
       trader_id: trader.id,
       total_profit: stats.totalProfit,
       verified_payouts: stats.verifiedPayouts,

@@ -31,9 +31,9 @@ function startCronJobs() {
   console.log('🚀 Starting cron jobs...');
   
   // Every hour at minute 0
-  cron.schedule('0 * * * *', () => {
+  cron.schedule('0 * * * *', async () => {
     console.log('⏰ Hourly sync triggered');
-    syncAllTraders();
+    await syncAllTraders();
   }, {
     timezone: "UTC"
   });

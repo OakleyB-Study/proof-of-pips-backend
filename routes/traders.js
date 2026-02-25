@@ -61,6 +61,14 @@ router.get('/', async (req, res) => {
 // GET SINGLE TRADER (for profile page)
 // ============================================
 
+// ============================================
+// GET SUPPORTED PROP FIRMS
+// ============================================
+
+router.get('/meta/firms', async (req, res) => {
+  res.json(getSupportedFirms());
+});
+
 router.get('/:username', async (req, res) => {
   try {
     const { username } = req.params;
@@ -105,14 +113,6 @@ router.get('/:username', async (req, res) => {
 });
 
 // ============================================
-// GET SUPPORTED PROP FIRMS
-// ============================================
-
-router.get('/meta/firms', async (req, res) => {
-  res.json(getSupportedFirms());
-});
-
-// ============================================
 // ADD NEW TRADER (Tradovate or TradeSyncer)
 // ============================================
 
@@ -131,6 +131,12 @@ router.post('/add', async (req, res) => {
       // TradeSyncer fields
       tradeSyncerApiKey,
     } = req.body;
+
+    // Validate and normalize Twitter username
+    if (!twitterUsername) {
+      return res.status(400).json({ error: 'Twitter username is required' });
+    }
+    const normalizedUsername = twitterUsername.replace('@', '').trim();
 
     // Verify Twitter auth token
     if (!authToken) {
@@ -153,7 +159,7 @@ router.post('/add', async (req, res) => {
         });
       }
 
-      if (verifyData.twitterUsername !== twitterUsername.replace('@', '')) {
+      if (verifyData.twitterUsername !== normalizedUsername) {
         return res.status(401).json({
           error: 'Twitter username mismatch. Please authenticate again.'
         });
@@ -174,8 +180,8 @@ router.post('/add', async (req, res) => {
     const { data: existing } = await db
       .from('traders')
       .select('id')
-      .eq('twitter_username', twitterUsername)
-      .single();
+      .eq('twitter_username', normalizedUsername)
+      .maybeSingle();
 
     if (existing) {
       return res.status(400).json({
@@ -205,10 +211,10 @@ router.post('/add', async (req, res) => {
     }
 
     // Test the credentials
-    console.log(`Validating ${connectionType} credentials for @${twitterUsername}...`);
+    console.log(`Validating ${connectionType} credentials for @${normalizedUsername}...`);
     try {
       await adapter.authenticate(credentials);
-      console.log(`Credentials validated for @${twitterUsername}`);
+      console.log(`Credentials validated for @${normalizedUsername}`);
     } catch (error) {
       return res.status(401).json({
         error: `Invalid ${connectionType} credentials: ${error.message}`
@@ -217,7 +223,7 @@ router.post('/add', async (req, res) => {
 
     // Build trader record
     const traderRecord = {
-      twitter_username: twitterUsername,
+      twitter_username: normalizedUsername,
       avatar: '🏆',
       connection_type: connectionType,
       prop_firm: propFirm || 'other',
@@ -242,10 +248,10 @@ router.post('/add', async (req, res) => {
 
     if (insertError) throw insertError;
 
-    console.log(`Trader @${twitterUsername} added successfully`);
+    console.log(`Trader @${normalizedUsername} added successfully`);
 
     // Trigger initial sync (async)
-    fetch(`${process.env.BACKEND_URL || 'http://localhost:3001'}/api/sync/trader/${twitterUsername}`, {
+    fetch(`${process.env.BACKEND_URL || 'http://localhost:3001'}/api/sync/trader/${normalizedUsername}`, {
       method: 'POST'
     }).catch(err => console.error('Initial sync failed:', err));
 
