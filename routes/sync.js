@@ -39,6 +39,28 @@ async function syncSingleTrader(trader) {
     const result = await adapter.sync(credentials);
     const stats = result.stats;
 
+    // Track unique account IDs (high-water mark - only goes up, never down)
+    if (result.accounts && result.accounts.length > 0) {
+      const currentKnown = trader.known_account_ids || [];
+      const newAccountIds = result.accounts
+        .map(a => String(a.id))
+        .filter(id => !currentKnown.includes(id));
+
+      if (newAccountIds.length > 0) {
+        const updatedKnown = [...currentKnown, ...newAccountIds];
+        await db.from('traders').update({
+          known_account_ids: updatedKnown,
+          total_accounts_linked: updatedKnown.length,
+        }).eq('id', trader.id);
+
+        logSecurityEvent('NEW_ACCOUNTS_DETECTED', {
+          username: trader.twitter_username,
+          newAccounts: newAccountIds.length,
+          totalAccounts: updatedKnown.length,
+        });
+      }
+    }
+
     // Upsert statistics (atomic operation)
     const { error: statsError } = await db.from('statistics').upsert([{
       trader_id: trader.id,

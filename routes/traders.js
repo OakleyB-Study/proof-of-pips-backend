@@ -39,6 +39,7 @@ router.get('/', async (req, res) => {
           propFirm: trader.prop_firm,
           propFirmDisplay: trader.prop_firm_display,
           connectionType: trader.connection_type,
+          totalAccountsLinked: trader.total_accounts_linked || 0,
           updatedAt: stats?.updated_at,
         };
       });
@@ -114,6 +115,7 @@ router.get('/:username', async (req, res) => {
       propFirm: data.prop_firm,
       propFirmDisplay: data.prop_firm_display,
       connectionType: data.connection_type,
+      totalAccountsLinked: data.total_accounts_linked || 0,
       updatedAt: stats?.updated_at,
     };
 
@@ -264,6 +266,8 @@ router.post('/add', createTraderLimiter, async (req, res) => {
       prop_firm: propFirm && PROP_FIRMS[propFirm] ? propFirm : 'other',
       prop_firm_display: propFirm && PROP_FIRMS[propFirm] ? PROP_FIRMS[propFirm].display : 'Other',
       account_created: new Date().toISOString(),
+      known_account_ids: [],
+      total_accounts_linked: 0,
     };
 
     if (connectionType === 'tradovate') {
