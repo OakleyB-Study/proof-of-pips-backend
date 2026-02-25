@@ -75,7 +75,7 @@ async function syncSingleTrader(trader) {
       worst_trade: stats.worstTrade,
       profit_factor: stats.profitFactor,
       updated_at: new Date().toISOString(),
-    }]);
+    }], { onConflict: 'trader_id' });
     if (statsError) throw statsError;
 
     // Store trade history (keep last 500 trades)
@@ -99,12 +99,14 @@ async function syncSingleTrader(trader) {
     }
 
     // Audit log in database
+    const now = new Date().toISOString();
     await db.from('sync_log').insert([{
       trader_id: trader.id,
       source: trader.connection_type,
       status: 'success',
       trades_synced: result.trades?.length || 0,
-      completed_at: new Date().toISOString(),
+      started_at: now,
+      completed_at: now,
     }]);
 
     await db.from('traders').update({ updated_at: new Date().toISOString() }).eq('id', trader.id);
@@ -122,12 +124,14 @@ async function syncSingleTrader(trader) {
     });
 
     try {
+      const failedAt = new Date().toISOString();
       await db.from('sync_log').insert([{
         trader_id: trader.id,
         source: trader.connection_type,
         status: 'failed',
         error_message: error.message,
-        completed_at: new Date().toISOString(),
+        started_at: failedAt,
+        completed_at: failedAt,
       }]);
     } catch (_) { /* don't fail on log error */ }
 

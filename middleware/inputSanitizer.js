@@ -26,7 +26,7 @@ function validateTwitterUsername(username) {
     return { valid: false, sanitized: '', error: 'Username is required' };
   }
 
-  const cleaned = username.replace('@', '').trim();
+  const cleaned = username.replace(/@/g, '').trim();
 
   if (cleaned.length === 0) {
     return { valid: false, sanitized: '', error: 'Username cannot be empty' };
