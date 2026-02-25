@@ -272,6 +272,7 @@ router.post('/add', createTraderLimiter, async (req, res) => {
 
     if (connectionType === 'tradovate') {
       traderRecord.tradovate_username = sanitizeString(tradovateUsername);
+      if (tradovateClientId) traderRecord.tradovate_client_id = sanitizeString(tradovateClientId);
       if (tradovatePassword) traderRecord.tradovate_access_token = encrypt(tradovatePassword);
       if (tradovateSecretKey) traderRecord.tradovate_refresh_token = encrypt(tradovateSecretKey);
     } else {

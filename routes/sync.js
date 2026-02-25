@@ -26,6 +26,7 @@ async function syncSingleTrader(trader) {
       credentials = {
         username: trader.tradovate_username,
         password: trader.tradovate_access_token ? decrypt(trader.tradovate_access_token) : '',
+        clientId: trader.tradovate_client_id || '',
         secretKey: trader.tradovate_refresh_token ? decrypt(trader.tradovate_refresh_token) : '',
       };
     } else if (trader.connection_type === 'tradesyncer') {
@@ -220,7 +221,7 @@ router.post('/trader/:username', async (req, res) => {
 
 router.post('/test', async (req, res) => {
   try {
-    const { connectionType, tradovateUsername, tradovatePassword, tradovateSecretKey, tradeSyncerApiKey } = req.body;
+    const { connectionType, tradovateUsername, tradovatePassword, tradovateClientId, tradovateSecretKey, tradeSyncerApiKey } = req.body;
 
     if (!connectionType || !validateConnectionType(connectionType)) {
       return res.status(400).json({ error: 'Valid connectionType is required (tradovate or tradesyncer)' });
@@ -233,6 +234,7 @@ router.post('/test', async (req, res) => {
       credentials = {
         username: tradovateUsername,
         password: tradovatePassword || '',
+        clientId: tradovateClientId || '',
         secretKey: tradovateSecretKey || '',
       };
     } else {

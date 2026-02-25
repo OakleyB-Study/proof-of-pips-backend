@@ -75,6 +75,8 @@ class TradovateAdapter extends BaseAdapter {
         expirationTime: response.data.expirationTime,
         userId: response.data.userId,
         name: response.data.name,
+        hasLive: response.data.hasLive || false,
+        userStatus: response.data.userStatus || 'Unknown',
       };
     } catch (error) {
       const msg = error.response?.data?.errorText || error.response?.data?.['p-ticket'] || error.message;
@@ -142,8 +144,54 @@ class TradovateAdapter extends BaseAdapter {
   }
 
   /**
-   * Get fills (executed trades) for a specific account.
-   * Tradovate uses "fills" for executed orders.
+   * Get fill pairs (round-trip trades) for a specific account.
+   * fillPair/list returns matched entry+exit fills with proper P&L.
+   * This is the most accurate source of trade P&L data from Tradovate.
+   *
+   * @param {Object} authContext - Auth context with accessToken
+   * @param {string|number} accountId - Tradovate account ID
+   * @returns {Promise<Array>} - Normalized trades with entry/exit and P&L
+   */
+  async getFillPairs(authContext, accountId) {
+    try {
+      const response = await axios.get(
+        `${this.baseURL}/fillPair/list`,
+        {
+          headers: {
+            'Authorization': `Bearer ${authContext.accessToken}`,
+            'Content-Type': 'application/json',
+          },
+        }
+      );
+
+      if (!Array.isArray(response.data)) {
+        return [];
+      }
+
+      // Filter for this account and normalize to our format
+      return response.data
+        .filter(pair => pair.accountId === accountId)
+        .map(pair => ({
+          externalTradeId: String(pair.id),
+          symbol: pair.contractId ? `contract-${pair.contractId}` : 'UNKNOWN',
+          side: pair.isBuy ? 'buy' : 'sell',
+          quantity: pair.qty || 1,
+          entryPrice: parseFloat(pair.buyPrice || pair.price) || 0,
+          exitPrice: parseFloat(pair.sellPrice) || 0,
+          profit: parseFloat(pair.pnl) || 0,
+          openedAt: pair.buyTimestamp || pair.timestamp,
+          closedAt: pair.sellTimestamp || pair.timestamp,
+          source: 'tradovate',
+        }));
+    } catch (error) {
+      console.error('[Tradovate] getFillPairs error:', error.response?.data || error.message);
+      return [];
+    }
+  }
+
+  /**
+   * Get individual fills (executed trades) for a specific account.
+   * Used as fallback when fillPair/list returns no data.
    *
    * @param {Object} authContext - Auth context with accessToken
    * @param {string|number} accountId - Tradovate account ID
@@ -151,7 +199,6 @@ class TradovateAdapter extends BaseAdapter {
    */
   async getTrades(authContext, accountId, options = {}) {
     try {
-      // Get fills (executed trades) for the account
       const response = await axios.get(
         `${this.baseURL}/fill/list`,
         {
@@ -169,52 +216,13 @@ class TradovateAdapter extends BaseAdapter {
       // Filter fills for this specific account
       const accountFills = response.data.filter(fill => fill.accountId === accountId);
 
-      // Also get positions for P&L data
-      let positions = [];
-      try {
-        const posResponse = await axios.get(
-          `${this.baseURL}/position/list`,
-          {
-            headers: {
-              'Authorization': `Bearer ${authContext.accessToken}`,
-              'Content-Type': 'application/json',
-            },
-          }
-        );
-        positions = Array.isArray(posResponse.data)
-          ? posResponse.data.filter(p => p.accountId === accountId)
-          : [];
-      } catch (e) {
-        // Positions endpoint might fail for some account types
-      }
-
-      // Get cash balance changes for payout tracking
-      let cashBalanceLog = [];
-      try {
-        const cashResponse = await axios.get(
-          `${this.baseURL}/cashBalance/list`,
-          {
-            headers: {
-              'Authorization': `Bearer ${authContext.accessToken}`,
-              'Content-Type': 'application/json',
-            },
-          }
-        );
-        cashBalanceLog = Array.isArray(cashResponse.data)
-          ? cashResponse.data.filter(c => c.accountId === accountId)
-          : [];
-      } catch (e) {
-        // Cash balance log might not be available
-      }
-
-      // Normalize fills to our standard trade format
       return accountFills.map(fill => ({
         externalTradeId: String(fill.id),
         symbol: fill.contractId ? `contract-${fill.contractId}` : 'UNKNOWN',
         side: fill.action === 'Buy' ? 'buy' : 'sell',
         quantity: fill.qty || 1,
         entryPrice: parseFloat(fill.price) || 0,
-        exitPrice: null, // Fills are individual - need to pair them for P&L
+        exitPrice: null,
         profit: parseFloat(fill.pnl) || 0,
         openedAt: fill.timestamp,
         closedAt: fill.timestamp,
@@ -227,14 +235,11 @@ class TradovateAdapter extends BaseAdapter {
   }
 
   /**
-   * Get closed positions with P&L (more useful than individual fills).
-   * This aggregates fills into round-trip trades.
+   * Get cash balance P&L entries as last-resort fallback.
+   * Less detailed than fillPairs but always available.
    */
-  async getClosedPositions(authContext, accountId) {
+  async getCashBalanceTrades(authContext, accountId) {
     try {
-      // Tradovate doesn't have a direct "closed trades" endpoint,
-      // so we use the order + fill data to reconstruct P&L.
-      // For prop firm tracking, the cash balance changes are most reliable.
       const response = await axios.get(
         `${this.baseURL}/cashBalance/list`,
         {
@@ -249,7 +254,6 @@ class TradovateAdapter extends BaseAdapter {
         return [];
       }
 
-      // Filter for this account's realized P&L entries
       return response.data
         .filter(entry => entry.accountId === accountId && entry.cashChangeType === 'TradePnL')
         .map(entry => ({
@@ -265,13 +269,18 @@ class TradovateAdapter extends BaseAdapter {
           source: 'tradovate',
         }));
     } catch (error) {
-      console.error('[Tradovate] getClosedPositions error:', error.message);
+      console.error('[Tradovate] getCashBalanceTrades error:', error.message);
       return [];
     }
   }
 
   /**
-   * Full sync process for Tradovate
+   * Full sync process for Tradovate.
+   *
+   * Trade data priority:
+   *   1. fillPair/list - round-trip trades with entry/exit/P&L (best)
+   *   2. fill/list     - individual fills (less context)
+   *   3. cashBalance/list - realized P&L entries (last resort)
    */
   async sync(credentials) {
     try {
@@ -279,30 +288,34 @@ class TradovateAdapter extends BaseAdapter {
 
       // Step 1: Authenticate
       const auth = await this.authenticate(credentials);
-      console.log(`[Tradovate] Authenticated as ${auth.name} (userId: ${auth.userId})`);
+      console.log(`[Tradovate] Authenticated as ${auth.name} (userId: ${auth.userId}, hasLive: ${auth.hasLive})`);
 
       // Step 2: Get all accounts
       const accounts = await this.getAccounts(auth);
       console.log(`[Tradovate] Found ${accounts.length} accounts`);
 
-      // Step 3: Get trades for all accounts
+      // Step 3: Get trades for all accounts (priority: fillPairs > fills > cashBalance)
       const allTrades = [];
       for (const account of accounts) {
-        // Prefer closed positions (aggregated P&L) over raw fills
-        const trades = await this.getClosedPositions(auth, account.id);
-        if (trades.length > 0) {
-          allTrades.push(...trades);
-        } else {
-          // Fallback to fills
-          const fills = await this.getTrades(auth, account.id);
-          allTrades.push(...fills);
+        // Try fillPair/list first (round-trip trades with proper P&L)
+        let trades = await this.getFillPairs(auth, account.id);
+
+        if (trades.length === 0) {
+          // Fallback to individual fills
+          trades = await this.getTrades(auth, account.id);
         }
+
+        if (trades.length === 0) {
+          // Last resort: cash balance P&L entries
+          trades = await this.getCashBalanceTrades(auth, account.id);
+        }
+
+        allTrades.push(...trades);
       }
       console.log(`[Tradovate] Found ${allTrades.length} total trades`);
 
       // Step 4: Calculate statistics
       const stats = this.calculateStats(allTrades);
-      console.log(`[Tradovate] Stats:`, stats);
 
       return {
         stats,
@@ -311,6 +324,8 @@ class TradovateAdapter extends BaseAdapter {
         auth: {
           accessToken: auth.accessToken,
           expirationTime: auth.expirationTime,
+          hasLive: auth.hasLive,
+          userStatus: auth.userStatus,
         },
       };
     } catch (error) {
