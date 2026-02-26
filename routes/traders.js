@@ -51,6 +51,28 @@ router.get('/', async (req, res) => {
   try {
     const { data, error } = await db.rpc('get_traders_with_stats');
 
+    // Helper to normalize a trader row to camelCase (handles both RPC and fallback)
+    function normalizeTrader(row, stats) {
+      return {
+        id: row.id,
+        twitter: row.twitter || row.twitter_username,
+        avatar: row.avatar,
+        totalProfit: row.totalProfit ?? row.total_profit ?? (stats?.total_profit) ?? 0,
+        verifiedPayouts: row.verifiedPayouts ?? row.verified_payouts ?? (stats?.verified_payouts) ?? 0,
+        monthlyProfit: row.monthlyProfit ?? row.monthly_profit ?? (stats?.monthly_profit) ?? 0,
+        winRate: row.winRate ?? row.win_rate ?? (stats?.win_rate) ?? 0,
+        totalTrades: row.totalTrades ?? row.total_trades ?? (stats?.total_trades) ?? 0,
+        profitFactor: row.profitFactor ?? row.profit_factor ?? (stats?.profit_factor) ?? 0,
+        accountCreated: row.accountCreated || row.account_created,
+        propFirm: row.propFirm || row.prop_firm,
+        propFirmDisplay: row.propFirmDisplay || row.prop_firm_display,
+        connectionType: row.connectionType || row.connection_type,
+        totalAccountsLinked: row.totalAccountsLinked ?? row.total_accounts_linked ?? 0,
+        authStatus: row.authStatus || row.auth_status || 'active',
+        updatedAt: row.updatedAt || row.updated_at || (stats?.updated_at),
+      };
+    }
+
     if (error) {
       const { data: tradersData } = await db.from('traders').select('*');
       const { data: statsData } = await db.from('statistics').select('*');
@@ -61,24 +83,7 @@ router.get('/', async (req, res) => {
 
       const traders = tradersData.map((trader) => {
         const stats = statsData?.find(s => s.trader_id === trader.id);
-        return {
-          id: trader.id,
-          twitter: trader.twitter_username,
-          avatar: trader.avatar,
-          totalProfit: stats?.total_profit || 0,
-          verifiedPayouts: stats?.verified_payouts || 0,
-          monthlyProfit: stats?.monthly_profit || 0,
-          winRate: stats?.win_rate || 0,
-          totalTrades: stats?.total_trades || 0,
-          profitFactor: stats?.profit_factor || 0,
-          accountCreated: trader.account_created,
-          propFirm: trader.prop_firm,
-          propFirmDisplay: trader.prop_firm_display,
-          connectionType: trader.connection_type,
-          totalAccountsLinked: trader.total_accounts_linked || 0,
-          authStatus: trader.auth_status || 'active',
-          updatedAt: stats?.updated_at,
-        };
+        return normalizeTrader(trader, stats);
       });
 
       traders.sort((a, b) => b.totalProfit - a.totalProfit);
@@ -89,7 +94,15 @@ router.get('/', async (req, res) => {
       return res.json(traders);
     }
 
-    res.json(data);
+    // RPC might return snake_case fields — normalize to camelCase
+    const normalizedData = Array.isArray(data) ? data.map(row => normalizeTrader(row)) : data;
+    if (Array.isArray(normalizedData)) {
+      normalizedData.sort((a, b) => b.totalProfit - a.totalProfit);
+      normalizedData.forEach((trader, index) => {
+        trader.rank = index + 1;
+      });
+    }
+    res.json(normalizedData);
   } catch (error) {
     console.error(JSON.stringify({
       timestamp: new Date().toISOString(),
