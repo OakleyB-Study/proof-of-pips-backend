@@ -49,7 +49,7 @@ function validateTwitterUsername(username) {
  * @returns {boolean}
  */
 function validateConnectionType(type) {
-  return type === 'tradovate' || type === 'tradesyncer';
+  return type === 'tradovate' || type === 'tradesyncer' || type === 'none';
 }
 
 /**

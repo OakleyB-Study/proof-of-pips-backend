@@ -154,9 +154,17 @@ router.get('/twitter/callback', async (req, res) => {
     // Clean up OAuth state session
     sessions.delete(state);
 
-    // STIG FIX: Instead of passing the auth token in the URL, use a short-lived
-    // intermediary code. The frontend exchanges this code for the auth token
-    // via a POST request (token never appears in URL/logs/referrer).
+    // Sign a JWT for stateless cookie-based session
+    const { signToken, getCookieOptions, COOKIE_NAME } = require('../utils/jwt');
+    const sessionToken = signToken({
+      twitterUsername: twitterUsername,
+      twitterId: userData.data.id,
+    });
+
+    // Set the session cookie (httpOnly, secure, sameSite)
+    res.cookie(COOKIE_NAME, sessionToken, getCookieOptions());
+
+    // Also keep legacy exchange code flow for backward compatibility
     const exchangeCode = crypto.randomBytes(16).toString('hex');
     const authToken = crypto.randomBytes(32).toString('hex');
 
@@ -173,8 +181,8 @@ router.get('/twitter/callback', async (req, res) => {
 
     logSecurityEvent('OAUTH_SUCCESS', { username: twitterUsername });
 
-    // Redirect with short-lived exchange code (not the actual auth token)
-    res.redirect(`${FRONTEND_URL}?code=${exchangeCode}&twitter_username=${encodeURIComponent(twitterUsername)}`);
+    // Redirect with auth=success flag + twitter_username (cookie handles the session)
+    res.redirect(`${FRONTEND_URL}?auth=success&twitter_username=${encodeURIComponent(twitterUsername)}`);
   } catch (error) {
     logSecurityEvent('OAUTH_CALLBACK_ERROR', { error: error.message });
     res.redirect(`${FRONTEND_URL}?error=oauth_failed`);
@@ -262,6 +270,49 @@ router.post('/verify', express.json(), (req, res) => {
     logSecurityEvent('AUTH_VERIFY_ERROR', { error: error.message });
     res.status(500).json({ error: 'Verification failed' });
   }
+});
+
+// ============================================
+// GET SESSION FROM COOKIE
+// GET /api/auth/me
+// Stateless JWT session restoration
+// ============================================
+
+router.get('/me', (req, res) => {
+  try {
+    const { verifyToken, COOKIE_NAME } = require('../utils/jwt');
+    const token = req.cookies?.[COOKIE_NAME];
+
+    if (!token) {
+      return res.json({ authenticated: false });
+    }
+
+    const decoded = verifyToken(token);
+    if (!decoded) {
+      return res.json({ authenticated: false });
+    }
+
+    res.json({
+      authenticated: true,
+      twitterUsername: decoded.twitterUsername,
+      twitterId: decoded.twitterId,
+    });
+  } catch (error) {
+    logSecurityEvent('AUTH_ME_ERROR', { error: error.message });
+    res.json({ authenticated: false });
+  }
+});
+
+// ============================================
+// LOGOUT (clear session cookie)
+// POST /api/auth/logout
+// ============================================
+
+router.post('/logout', (req, res) => {
+  const { getCookieOptions, COOKIE_NAME } = require('../utils/jwt');
+  res.clearCookie(COOKIE_NAME, getCookieOptions());
+  logSecurityEvent('USER_LOGOUT', { sourceIp: req.ip });
+  res.json({ success: true });
 });
 
 module.exports = router;

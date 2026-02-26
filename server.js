@@ -1,5 +1,6 @@
 const express = require('express');
 const cors = require('cors');
+const cookieParser = require('cookie-parser');
 require('dotenv').config();
 
 const tradersRoutes = require('./routes/traders');
@@ -38,6 +39,9 @@ app.use(cors({
 
 // STIG: Limit request body size to prevent DoS
 app.use(express.json({ limit: '1mb' }));
+
+// Cookie parser for JWT session cookies
+app.use(cookieParser());
 
 // Rate limiting
 app.use(generalLimiter);

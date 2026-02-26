@@ -6,6 +6,42 @@ const { getAdapter, getSupportedFirms, isConnectionSupported, PROP_FIRMS } = req
 const { logSecurityEvent } = require('../middleware/auditLogger');
 const { validateTwitterUsername, validateConnectionType, sanitizeString } = require('../middleware/inputSanitizer');
 const { createTraderLimiter } = require('../middleware/rateLimiter');
+const { jwtAuth } = require('../middleware/jwtAuth');
+const { verifyToken, COOKIE_NAME } = require('../utils/jwt');
+
+/**
+ * Authenticate a request using either JWT cookie or legacy authToken body param.
+ * Returns { twitterUsername, twitterId } or null.
+ */
+async function authenticateRequest(req) {
+  // Try JWT cookie first
+  const cookieToken = req.cookies?.[COOKIE_NAME];
+  if (cookieToken) {
+    const decoded = verifyToken(cookieToken);
+    if (decoded) return decoded;
+  }
+
+  // Fall back to legacy authToken in body
+  const { authToken } = req.body;
+  if (authToken && typeof authToken === 'string') {
+    try {
+      const verifyResponse = await fetch(
+        `${process.env.BACKEND_URL || 'http://localhost:3001'}/api/auth/verify`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ authToken }),
+        }
+      );
+      const verifyData = await verifyResponse.json();
+      if (verifyResponse.ok && verifyData.verified) {
+        return { twitterUsername: verifyData.twitterUsername, twitterId: verifyData.twitterId };
+      }
+    } catch {}
+  }
+
+  return null;
+}
 
 // ============================================
 // GET ALL TRADERS (for leaderboard)
@@ -160,41 +196,24 @@ router.post('/add', createTraderLimiter, async (req, res) => {
     }
     const normalizedUsername = usernameValidation.sanitized;
 
-    // Verify Twitter auth token
-    if (!authToken || typeof authToken !== 'string') {
+    // Verify authentication (JWT cookie or legacy authToken)
+    const authUser = await authenticateRequest(req);
+    if (!authUser) {
+      logSecurityEvent('AUTH_VERIFY_REJECTED', { username: normalizedUsername, sourceIp: req.ip });
       return res.status(401).json({
-        error: 'Twitter authentication required. Please authenticate with Twitter first.',
+        error: 'Invalid or expired authentication. Please log in again.',
       });
     }
 
-    try {
-      const verifyResponse = await fetch(`${process.env.BACKEND_URL || 'http://localhost:3001'}/api/auth/verify`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ authToken }),
+    if (authUser.twitterUsername !== normalizedUsername) {
+      logSecurityEvent('AUTH_USERNAME_MISMATCH', {
+        claimed: normalizedUsername,
+        actual: authUser.twitterUsername,
+        sourceIp: req.ip,
       });
-      const verifyData = await verifyResponse.json();
-
-      if (!verifyResponse.ok || !verifyData.verified) {
-        logSecurityEvent('AUTH_VERIFY_REJECTED', { username: normalizedUsername, sourceIp: req.ip });
-        return res.status(401).json({
-          error: 'Invalid or expired Twitter authentication. Please try again.',
-        });
-      }
-
-      if (verifyData.twitterUsername !== normalizedUsername) {
-        logSecurityEvent('AUTH_USERNAME_MISMATCH', {
-          claimed: normalizedUsername,
-          actual: verifyData.twitterUsername,
-          sourceIp: req.ip,
-        });
-        return res.status(401).json({
-          error: 'Twitter username mismatch. Please authenticate again.',
-        });
-      }
-    } catch (error) {
-      logSecurityEvent('AUTH_VERIFY_ERROR', { username: normalizedUsername, error: error.message });
-      return res.status(401).json({ error: 'Failed to verify Twitter authentication' });
+      return res.status(401).json({
+        error: 'Twitter username mismatch. Please authenticate again.',
+      });
     }
 
     // STIG: Validate connection type against whitelist
@@ -338,6 +357,197 @@ router.post('/add', createTraderLimiter, async (req, res) => {
 });
 
 // ============================================
+// REGISTER WITHOUT LINKING (Twitter-only signup)
+// POST /api/traders/register
+// Creates a trader with connection_type='none'
+// ============================================
+
+router.post('/register', createTraderLimiter, jwtAuth, async (req, res) => {
+  try {
+    const twitterUsername = req.user.twitterUsername;
+
+    const usernameValidation = validateTwitterUsername(twitterUsername);
+    if (!usernameValidation.valid) {
+      return res.status(400).json({ error: usernameValidation.error });
+    }
+    const normalizedUsername = usernameValidation.sanitized;
+
+    // Check if already exists
+    const { data: existing } = await db
+      .from('traders')
+      .select('id')
+      .eq('twitter_username', normalizedUsername)
+      .maybeSingle();
+
+    if (existing) {
+      return res.status(400).json({ error: 'This Twitter username is already registered.' });
+    }
+
+    const traderRecord = {
+      twitter_username: normalizedUsername,
+      avatar: '',
+      connection_type: 'none',
+      prop_firm: 'other',
+      prop_firm_display: 'Not Linked',
+      account_created: new Date().toISOString(),
+      known_account_ids: [],
+      total_accounts_linked: 0,
+      auth_status: 'unlinked',
+    };
+
+    const { data: newTrader, error: insertError } = await db
+      .from('traders')
+      .insert([traderRecord])
+      .select()
+      .single();
+
+    if (insertError) throw insertError;
+
+    logSecurityEvent('TRADER_REGISTERED_UNLINKED', {
+      username: normalizedUsername,
+      traderId: newTrader.id,
+      sourceIp: req.ip,
+    });
+
+    res.status(201).json({
+      message: 'Account created! Link a trading platform to appear on the leaderboard.',
+      trader: {
+        twitter: newTrader.twitter_username,
+        id: newTrader.id,
+        connectionType: 'none',
+      },
+    });
+  } catch (error) {
+    console.error(JSON.stringify({
+      timestamp: new Date().toISOString(),
+      level: 'ERROR',
+      event: 'REGISTER_FAILED',
+      message: error.message,
+    }));
+    res.status(500).json({ error: 'Registration failed. Please try again.' });
+  }
+});
+
+// ============================================
+// LINK TRADING PLATFORM (for unlinked users)
+// POST /api/traders/link
+// ============================================
+
+router.post('/link', createTraderLimiter, jwtAuth, async (req, res) => {
+  try {
+    const twitterUsername = req.user.twitterUsername;
+
+    const usernameValidation = validateTwitterUsername(twitterUsername);
+    if (!usernameValidation.valid) {
+      return res.status(400).json({ error: usernameValidation.error });
+    }
+    const normalizedUsername = usernameValidation.sanitized;
+
+    const {
+      propFirm,
+      connectionType,
+      tradovateUsername,
+      tradovatePassword,
+      tradovateClientId,
+      tradovateSecretKey,
+      tradeSyncerApiKey,
+    } = req.body;
+
+    if (!connectionType || !['tradovate', 'tradesyncer'].includes(connectionType)) {
+      return res.status(400).json({ error: 'Invalid connection type. Use "tradovate" or "tradesyncer".' });
+    }
+
+    // Find the existing trader
+    const { data: trader, error: lookupError } = await db
+      .from('traders')
+      .select('*')
+      .eq('twitter_username', normalizedUsername)
+      .single();
+
+    if (lookupError || !trader) {
+      return res.status(404).json({ error: 'Trader not found. Please register first.' });
+    }
+
+    if (trader.connection_type !== 'none') {
+      return res.status(400).json({ error: 'Account is already linked to a trading platform.' });
+    }
+
+    // Validate and authenticate credentials
+    const adapter = getAdapter(connectionType);
+    let credentials;
+
+    if (connectionType === 'tradovate') {
+      if (!tradovateUsername) {
+        return res.status(400).json({ error: 'Tradovate username is required' });
+      }
+      credentials = {
+        username: sanitizeString(tradovateUsername),
+        password: tradovatePassword || '',
+        clientId: tradovateClientId || '',
+        secretKey: tradovateSecretKey || '',
+      };
+    } else {
+      if (!tradeSyncerApiKey) {
+        return res.status(400).json({ error: 'TradeSyncer API key is required' });
+      }
+      credentials = { apiKey: sanitizeString(tradeSyncerApiKey) };
+    }
+
+    logSecurityEvent('LINK_VALIDATION_START', { username: normalizedUsername, connectionType, sourceIp: req.ip });
+
+    let authResult;
+    try {
+      authResult = await adapter.authenticate(credentials);
+    } catch (error) {
+      logSecurityEvent('LINK_VALIDATION_FAILED', { username: normalizedUsername, connectionType, sourceIp: req.ip });
+      return res.status(401).json({ error: `Invalid ${connectionType} credentials. Please check and try again.` });
+    }
+
+    // Build update
+    const updateData = {
+      connection_type: connectionType,
+      prop_firm: propFirm && PROP_FIRMS[propFirm] ? propFirm : 'other',
+      prop_firm_display: propFirm && PROP_FIRMS[propFirm] ? PROP_FIRMS[propFirm].display : 'Other',
+      auth_status: 'active',
+      updated_at: new Date().toISOString(),
+    };
+
+    if (connectionType === 'tradovate') {
+      updateData.tradovate_username = sanitizeString(tradovateUsername);
+      if (tradovateClientId) updateData.tradovate_client_id = sanitizeString(tradovateClientId);
+      updateData.tradovate_access_token = encrypt(authResult.accessToken);
+      updateData.tradovate_token_expires_at = authResult.expirationTime || null;
+      if (tradovateSecretKey) updateData.tradovate_refresh_token = encrypt(tradovateSecretKey);
+    } else {
+      updateData.tradesyncer_api_key = encrypt(sanitizeString(tradeSyncerApiKey));
+    }
+
+    await db.from('traders').update(updateData).eq('id', trader.id);
+
+    logSecurityEvent('TRADER_LINKED', { username: normalizedUsername, connectionType, traderId: trader.id, sourceIp: req.ip });
+
+    // Trigger initial sync
+    const syncKey = process.env.SYNC_API_KEY;
+    if (syncKey) {
+      fetch(`${process.env.BACKEND_URL || 'http://localhost:3001'}/api/sync/trader/${normalizedUsername}`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${syncKey}` },
+      }).catch(() => {});
+    }
+
+    res.json({ success: true, message: 'Account linked successfully! Your stats are being synced.' });
+  } catch (error) {
+    console.error(JSON.stringify({
+      timestamp: new Date().toISOString(),
+      level: 'ERROR',
+      event: 'LINK_FAILED',
+      message: error.message,
+    }));
+    res.status(500).json({ error: 'Failed to link account. Please try again.' });
+  }
+});
+
+// ============================================
 // RE-AUTHENTICATE TRADER (token expired)
 // POST /api/traders/reauth
 // User enters password again to get a new token
@@ -345,7 +555,7 @@ router.post('/add', createTraderLimiter, async (req, res) => {
 
 router.post('/reauth', createTraderLimiter, async (req, res) => {
   try {
-    const { twitterUsername, authToken, tradovatePassword } = req.body;
+    const { twitterUsername, tradovatePassword } = req.body;
 
     // STIG: Validate Twitter username
     const usernameValidation = validateTwitterUsername(twitterUsername);
@@ -354,30 +564,16 @@ router.post('/reauth', createTraderLimiter, async (req, res) => {
     }
     const normalizedUsername = usernameValidation.sanitized;
 
-    // Verify Twitter auth token
-    if (!authToken || typeof authToken !== 'string') {
-      return res.status(401).json({ error: 'Twitter authentication required.' });
+    // Verify authentication (JWT cookie or legacy authToken)
+    const authUser = await authenticateRequest(req);
+    if (!authUser) {
+      logSecurityEvent('REAUTH_VERIFY_REJECTED', { username: normalizedUsername, sourceIp: req.ip });
+      return res.status(401).json({ error: 'Invalid or expired authentication.' });
     }
 
-    try {
-      const verifyResponse = await fetch(`${process.env.BACKEND_URL || 'http://localhost:3001'}/api/auth/verify`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ authToken }),
-      });
-      const verifyData = await verifyResponse.json();
-
-      if (!verifyResponse.ok || !verifyData.verified) {
-        logSecurityEvent('REAUTH_VERIFY_REJECTED', { username: normalizedUsername, sourceIp: req.ip });
-        return res.status(401).json({ error: 'Invalid or expired Twitter authentication.' });
-      }
-
-      if (verifyData.twitterUsername !== normalizedUsername) {
-        logSecurityEvent('REAUTH_USERNAME_MISMATCH', { claimed: normalizedUsername, actual: verifyData.twitterUsername });
-        return res.status(401).json({ error: 'Twitter username mismatch.' });
-      }
-    } catch (error) {
-      return res.status(401).json({ error: 'Failed to verify Twitter authentication' });
+    if (authUser.twitterUsername !== normalizedUsername) {
+      logSecurityEvent('REAUTH_USERNAME_MISMATCH', { claimed: normalizedUsername, actual: authUser.twitterUsername });
+      return res.status(401).json({ error: 'Twitter username mismatch.' });
     }
 
     // Look up existing trader
