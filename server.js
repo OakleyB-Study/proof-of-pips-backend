@@ -49,10 +49,15 @@ app.use(generalLimiter);
 // CJIS 5.4: Structured audit logging (replaces basic console.log)
 app.use(auditLogger);
 
-// Routes
+// Routes (current + versioned aliases)
 app.use('/api/traders', tradersRoutes);
 app.use('/api/sync', syncLimiter, syncAuth, syncRoutes);
 app.use('/api/auth', authRoutes);
+
+// API v1 aliases — same handlers, versioned prefix
+app.use('/api/v1/traders', tradersRoutes);
+app.use('/api/v1/sync', syncLimiter, syncAuth, syncRoutes);
+app.use('/api/v1/auth', authRoutes);
 
 // Health check - STIG: minimal information disclosure
 app.get('/health', (req, res) => {
